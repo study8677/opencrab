@@ -1,2 +1,7 @@
-openai>=1.0.0
-python-dotenv>=1.0.0
+# opencrab 跑在纯 Python 标准库上 —— 零第三方依赖。
+#
+# 大脑：通过 urllib 直连任何 OpenAI 兼容端点(刻意用干净 header，
+#       避开某些中转网关对 SDK 特征头的 WAF 拦截)。
+# 手  ：借本机的 claude / codex CLI。
+#
+# 所以这里是空的。直接 `python crab.py` 即可。

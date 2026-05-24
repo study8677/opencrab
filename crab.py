@@ -10,7 +10,7 @@ opencrab 🦀 — 一只为「让自己持续进化」而活的自主生命体�
     python crab.py            # 持续活着，一直心跳、一直进化
     python crab.py --once     # 只心跳一次(适合 demo / 测试)
 
-大脑 model-agnostic(任何 OpenAI 兼容端点)；手借 Claude Code / Codex。
+零第三方依赖：大脑通过 urllib 直连任何 OpenAI 兼容端点，手借 Claude Code / Codex。
 没配 key 时进「梦境模式」空跑，照样能看到生命循环转起来。
 """
 from __future__ import annotations
@@ -24,6 +24,8 @@ import subprocess
 import sys
 import textwrap
 import time
+import urllib.error
+import urllib.request
 
 # ── 位置 ────────────────────────────────────────────────────────────
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
@@ -35,16 +37,24 @@ SKILLS_DIR = REPO_ROOT / "skills"     # 技能库：它学会的本事(进仓库
 STATE_DIR = REPO_ROOT / "state"       # 它的记忆(被 .gitignore 忽略)
 STATE_FILE = STATE_DIR / "crab_state.json"
 
-# ── 配置(全部可被环境变量 / .env 覆盖)───────────────────────────────
-try:
-    from dotenv import load_dotenv
-    load_dotenv(REPO_ROOT / ".env")
-except Exception:
-    pass
+
+# ── 配置(自己解析 .env，零依赖)──────────────────────────────────────
+def _load_env(path: pathlib.Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text("utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        os.environ.setdefault(key.strip(), val.strip())
+
+
+_load_env(REPO_ROOT / ".env")
 
 API_KEY = os.environ.get("OPENCRAB_API_KEY")
-BASE_URL = os.environ.get("OPENCRAB_BASE_URL", "https://api.openai.com/v1")
-MODEL = os.environ.get("OPENCRAB_MODEL", "gpt-4o-mini")
+BASE_URL = os.environ.get("OPENCRAB_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+MODEL = os.environ.get("OPENCRAB_MODEL", "gpt-5.4-mini")
 TICK_SECONDS = int(os.environ.get("OPENCRAB_TICK_SECONDS", "3600"))
 DAILY_ENERGY = int(os.environ.get("OPENCRAB_DAILY_ENERGY", "50000"))
 MOLT_EVERY = int(os.environ.get("OPENCRAB_MOLT_EVERY", "24"))   # 多少次心跳蜕一次壳
@@ -89,26 +99,36 @@ def git(args: str) -> str:
         return ""
 
 
-# ── 大脑(model-agnostic)──────────────────────────────────────────────
+# ── 大脑(urllib 直连任何 OpenAI 兼容端点)─────────────────────────────
 def brain(system: str, prompt: str) -> tuple[str, int]:
-    """调用大脑，返回 (文本, 消耗的体力/token)。无 key 或无 SDK -> 梦境模式。"""
+    """调用大脑，返回 (文本, 消耗的体力/token)。
+    无 key -> 梦境模式；出错 -> 降级，绝不让一次抖动弄死这只生命。
+    刻意用干净 User-Agent，避开某些中转网关对 SDK 特征头的 WAF 拦截。"""
     if not API_KEY:
         return _dream(), 0
-    try:
-        from openai import OpenAI
-    except Exception:
-        log("⚠️  未安装 openai (pip install openai)，先用梦境模式。")
-        return _dream(), 0
-    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": prompt}],
-        temperature=0.8,
+    body = json.dumps({
+        "model": MODEL,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": prompt}],
+        "temperature": 0.8,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{BASE_URL}/chat/completions", data=body, method="POST",
+        headers={"Authorization": f"Bearer {API_KEY}",
+                 "Content-Type": "application/json",
+                 "User-Agent": "opencrab/0.1"},
     )
-    text = (resp.choices[0].message.content or "").strip()
-    usage = getattr(resp, "usage", None)
-    tokens = getattr(usage, "total_tokens", None) or max(1, len(text) // 3)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        log(f"⚠️  大脑被拒({e.code})：{e.read()[:160]!r}")
+        return f"(这次没想清楚：大脑返回 {e.code})", 0
+    except Exception as e:
+        log(f"⚠️  够不到大脑：{e}")
+        return "(这次没想清楚：暂时够不到大脑)", 0
+    text = (data["choices"][0]["message"].get("content") or "").strip()
+    tokens = (data.get("usage") or {}).get("total_tokens") or max(1, len(text) // 3)
     return text, tokens
 
 
@@ -283,7 +303,7 @@ def banner() -> None:
      / '-----' \
 """)
     hand_state = "可用" if hands.has_hands(EXECUTOR) else "未就绪"
-    brain_state = "已接" if API_KEY else "梦境"
+    brain_state = f"已接({MODEL})" if API_KEY else "梦境"
     n_skills = len(list(SKILLS_DIR.glob("*.md"))) if SKILLS_DIR.exists() else 0
     log(f"🦀 自治={AUTONOMY} · 手={EXECUTOR}({hand_state}) · "
         f"大脑={brain_state} · 已学技能={n_skills}\n")

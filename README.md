@@ -60,13 +60,12 @@ opencrab 自己没有手——要真改代码、让自己进化时，它**雇佣
 ## 唤醒它
 
 ```bash
-pip install -r requirements.txt
-cp .env.example .env        # 填任意 OpenAI 兼容 key：DeepSeek / Kimi / OpenAI…
+cp .env.example .env        # 填任意 OpenAI 兼容 key：DeepSeek / Kimi / GPT…
 python crab.py --once       # 让它心跳一次
 python crab.py              # 让它一直活着、一直进化
 ```
 
-没填 key 也能跑（梦境模式）。接上大脑后，它每次心跳都盘点领地、决定今天怎么让自己更好，写进 `journal/`；蜕壳时把经验蒸馏进 `skills/`。
+**零第三方依赖**，纯 Python 标准库即可跑。没填 key 也能跑（梦境模式）。接上大脑后，它每次心跳都盘点领地、决定今天怎么让自己更好，写进 `journal/`；蜕壳时把经验蒸馏进 `skills/`。
 
 ## 状态
 
