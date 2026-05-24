@@ -32,6 +32,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))   # 保证能 import 同目录的 hands
 import hands                          # noqa: E402
 import capabilities                    # noqa: E402  插件化能力注册中心
+import audit                           # noqa: E402  结构化运行审计(回放/定位问题)
 
 JOURNAL_DIR = REPO_ROOT / "journal"   # 航海日志：它经营领地的产出(进仓库)
 SKILLS_DIR = REPO_ROOT / "skills"     # 技能库：它学会的本事(进仓库，是它的资产)
@@ -284,7 +285,11 @@ def deliberate(state: dict) -> bool:
     """⚖️ 本能闸门：体力还够吗？(危险动作的分寸由 hands 的分支模式把守)"""
     if state["energy_spent_today"] >= DAILY_ENERGY:
         log("😴 今天体力用尽，缩回壳里歇着。")
+        audit.record("decision", gate="energy", pass_=False,
+                     spent=state["energy_spent_today"], budget=DAILY_ENERGY)
         return False
+    audit.record("decision", gate="energy", pass_=True,
+                 spent=state["energy_spent_today"], budget=DAILY_ENERGY)
     return True
 
 
@@ -343,8 +348,11 @@ def tick() -> bool:
         state["energy_spent_today"] = 0
 
     log(f"\n🌊 醒来 · tick #{state['ticks'] + 1} · {now_iso()}")
+    audit.record("tick_start", tick=state["ticks"] + 1,
+                 energy_spent=state["energy_spent_today"])
     if not deliberate(state):
         save_state(state)
+        audit.record("tick_skip", tick=state["ticks"] + 1, reason="energy")
         return False
 
     territory = sense_territory()
@@ -355,10 +363,15 @@ def tick() -> bool:
     state["energy_spent_today"] += spent
     log("❤️  生成意图")
     log(textwrap.indent(intent, "     "))
+    audit.record("intent", text=intent.split("\n")[0][:160],
+                 tokens=spent, dreaming=not API_KEY)
 
     before = snapshot()
     path, proposal = act(intent, dry_run=DRY_RUN)
     rel = path.relative_to(REPO_ROOT)
+    audit.record("act", autonomy=AUTONOMY, dry_run=DRY_RUN, journal=path.name,
+                 changed=bool(proposal and proposal.get("changed")),
+                 branch=(proposal or {}).get("branch"))
     if proposal and proposal.get("dry_run"):
         log(f"🔮 预演 → 已摊开执行路径与 {len(proposal.get('risks', []))} 条风险点（未动手）+ 日志 {rel}")
         for r in proposal.get("risks", []):
@@ -383,6 +396,8 @@ def tick() -> bool:
         log("🐚 蜕壳：蒸馏技能、压缩记忆")
     save_state(state)
     log(f"📝 沉淀完毕(今日体力 {state['energy_spent_today']}/{DAILY_ENERGY})")
+    audit.record("tick_done", tick=state["ticks"],
+                 energy_spent=state["energy_spent_today"])
     return True
 
 
@@ -422,17 +437,33 @@ def main() -> None:
         sys.exit(0 if r.ok else 1)
 
     banner()
+    audit.record("startup", autonomy=AUTONOMY, executor=EXECUTOR,
+                 dreaming=not API_KEY, once=args.once, tick_seconds=TICK_SECONDS)
     if args.once:
-        tick()
+        _safe_tick()
+        audit.record("exit", reason="once")
         return
 
     log(f"opencrab 开始生活，每 {TICK_SECONDS}s 一次心跳。Ctrl+C 退出。")
     try:
         while True:
-            tick()
+            _safe_tick()
             time.sleep(TICK_SECONDS)
     except KeyboardInterrupt:
         log("\n🦀 缩回壳里，下次见。")
+        audit.record("exit", reason="interrupt")
+
+
+def _safe_tick() -> bool:
+    """跑一次心跳；任何意外崩溃都被审计下来，不让生命循环就此断掉。"""
+    try:
+        return tick()
+    except Exception as e:
+        import traceback
+        log(f"💥 这次心跳摔了一跤：{e}")
+        audit.record("failure", where="tick", error=repr(e),
+                     trace=traceback.format_exc(limit=4))
+        return False
 
 
 if __name__ == "__main__":
