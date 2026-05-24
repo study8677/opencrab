@@ -40,7 +40,8 @@ def take() -> dict:
     }
 
 
-@capability("snapshot", "拍快照：Python 文件数、代码行数、已学技能、航海日志")
+@capability("snapshot", "拍快照：Python 文件数、代码行数、已学技能、航海日志",
+            category="感知", tags=("snapshot", "metrics", "evolution"))
 def run(ctx: dict) -> Result:
     snap = take()
     summary = (f"{snap['py_files']} 个 .py · {snap['loc']} 行 · "

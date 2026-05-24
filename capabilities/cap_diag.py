@@ -100,7 +100,8 @@ def diff(before: dict, after: dict) -> list[str]:
     return diffs
 
 
-@capability("diag", "运行态诊断：分支/脏改动/配置/审计尾部，并对比上次快照")
+@capability("diag", "运行态诊断：分支/脏改动/配置/审计尾部，并对比上次快照",
+            category="感知", tags=("diagnostics", "runtime", "git"))
 def run(ctx: dict) -> Result:
     now = capture()
     last = _load_last()
