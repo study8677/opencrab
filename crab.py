@@ -31,6 +31,7 @@ import urllib.request
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))   # 保证能 import 同目录的 hands
 import hands                          # noqa: E402
+import capabilities                    # noqa: E402  插件化能力注册中心
 
 JOURNAL_DIR = REPO_ROOT / "journal"   # 航海日志：它经营领地的产出(进仓库)
 SKILLS_DIR = REPO_ROOT / "skills"     # 技能库：它学会的本事(进仓库，是它的资产)
@@ -184,22 +185,9 @@ def learn_skill(state: dict) -> None:
 
 # ── 状态快照 + 变更摘要：看清自己到底变强了什么 ──────────────────────
 def snapshot() -> dict:
-    """📸 给「此刻的我」拍一张快照：用几个关键指标量化领地的状态。"""
-    py_files = sorted(REPO_ROOT.glob("*.py"))
-    loc = 0
-    for p in py_files:
-        try:
-            loc += len(p.read_text("utf-8", errors="ignore").splitlines())
-        except Exception:
-            pass
-    return {
-        "at": now_iso(),
-        "head": git("rev-parse --short HEAD") or "?",
-        "py_files": len(py_files),
-        "loc": loc,
-        "skills": len(list(SKILLS_DIR.glob("*.md"))) if SKILLS_DIR.exists() else 0,
-        "journals": len(list(JOURNAL_DIR.glob("*.md"))) if JOURNAL_DIR.exists() else 0,
-    }
+    """📸 给「此刻的我」拍一张快照：委托给 snapshot 能力插件(单一真相源)。"""
+    from capabilities import cap_snapshot
+    return cap_snapshot.take()
 
 
 # 哪些指标值得追踪，以及人话标签
@@ -408,14 +396,30 @@ def banner() -> None:
     hand_state = "可用" if hands.has_hands(EXECUTOR) else "未就绪"
     brain_state = f"已接({MODEL})" if API_KEY else "梦境"
     n_skills = len(list(SKILLS_DIR.glob("*.md"))) if SKILLS_DIR.exists() else 0
+    caps = ", ".join(c.name for c in capabilities.enabled_capabilities()) or "(无)"
     log(f"🦀 自治={AUTONOMY} · 手={EXECUTOR}({hand_state}) · "
-        f"大脑={brain_state} · 已学技能={n_skills}\n")
+        f"大脑={brain_state} · 已学技能={n_skills}")
+    log(f"🧩 已启用能力：{caps}\n")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="opencrab — 一只自主数字生命")
     ap.add_argument("--once", action="store_true", help="只心跳一次")
+    ap.add_argument("--caps", action="store_true", help="列出全部可插拔能力后退出")
+    ap.add_argument("--cap", metavar="NAME", help="单独运行一种能力后退出")
     args = ap.parse_args()
+
+    if args.caps:
+        enabled = {c.name for c in capabilities.enabled_capabilities()}
+        for c in capabilities.all_capabilities():
+            log(f"  {'🟢' if c.name in enabled else '⚪'} {c.name} — {c.summary}")
+        return
+    if args.cap:
+        r = capabilities.run(args.cap)
+        log(f"{'✅' if r.ok else '❌'} {args.cap}：{r.summary}")
+        if r.detail:
+            log(textwrap.indent(r.detail, "     "))
+        sys.exit(0 if r.ok else 1)
 
     banner()
     if args.once:
