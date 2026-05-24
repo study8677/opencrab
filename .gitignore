@@ -1,0 +1,37 @@
+# === Secrets — NEVER commit (public repo!) ===
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.*
+credentials.*
+
+# === opencrab runtime state ===
+/state/
+/logs/
+*.sqlite
+*.sqlite3
+*.db
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# === Node (if used) ===
+node_modules/
+dist/
+.pnpm-store/
+
+# === OS / editor ===
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
