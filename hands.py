@@ -36,6 +36,62 @@ def _git(repo: pathlib.Path, *args: str, timeout: int = 60) -> subprocess.Comple
                           capture_output=True, text=True, timeout=timeout)
 
 
+def _plan_cmd(task: str, executor: str, budget_usd: float) -> list[str]:
+    """爪子将要执行的真实命令(预演与实跑共用，保证预演看到的就是要跑的)。"""
+    if executor == "codex":  # 实验性
+        return ["codex", "exec", "--sandbox", "workspace-write", task]
+    return ["claude", "-p", task, "--permission-mode", "acceptEdits",
+            "--allowedTools", "Read Edit Write Glob Grep",
+            "--disallowedTools", "Bash WebFetch WebSearch",
+            "--max-budget-usd", str(budget_usd), "--output-format", "text"]
+
+
+def _dry_run_preview(task: str, *, repo: pathlib.Path, branch: str, base: str,
+                     executor: str, budget_usd: float, integrate: str,
+                     available: bool) -> dict:
+    """预演：真正雇佣爪子之前，先把完整执行路径、将要做的改动与风险点摊开看。"""
+    cmd = _plan_cmd(task, executor, budget_usd)
+
+    # 执行路径：把 integrate 模式下会一步步发生什么写清楚
+    steps = [f"开新分支 {branch}（从 {base}）",
+             f"雇佣 {executor} 在分支上改文件（预算 ${budget_usd}，仅 Read/Edit/Write/Glob/Grep，禁 Bash/联网）",
+             "opencrab 亲自 git add -A 并提交改动到分支"]
+    if integrate == "branch":
+        steps.append("停在分支上养着，不合并、不 push")
+    else:
+        steps.append("自测：py_compile 全部 *.py + import crab（不过则回滚丢弃、保命）")
+        steps.append(f"自测通过 → checkout {base} 并 --no-ff 合并（冲突则放弃留分支）")
+        if integrate == "publish":
+            steps.append(f"push origin {base} 到公开仓 🌊")
+        else:
+            steps.append("只到本地主干，不 push")
+
+    # 风险点：越靠后越危险，预演的价值就在这里
+    risks: list[str] = []
+    if not available:
+        risks.append(f"⛔ 未找到 {executor} CLI —— 实跑会直接放弃，无任何改动")
+    if executor == "codex":
+        risks.append("⚠️ codex 执行器仍是实验性，sandbox 行为未充分验证")
+    if integrate == "publish":
+        risks.append("🌊 publish：自测一过就会 push 到公开仓，改动将对全世界可见")
+    elif integrate == "merge":
+        risks.append("🔀 merge：自测一过就并入本地主干（不 push，但本地主干会变）")
+
+    dirty = _git(repo, "status", "--porcelain").stdout.strip()
+    if dirty:
+        n = len(dirty.splitlines())
+        risks.append(f"⚠️ 工作区已有 {n} 处未提交改动 —— git add -A 会把它们一起卷进本次提交")
+    if _git(repo, "rev-parse", "--verify", branch).returncode == 0:
+        risks.append(f"⚠️ 分支 {branch} 已存在 —— 实跑开分支会失败")
+    if not risks:
+        risks.append("✅ 未发现明显风险点")
+
+    return {"ok": False, "branch": branch, "base": base, "executor": executor,
+            "available": available, "changed": False, "integrate": integrate,
+            "dry_run": True, "planned_cmd": cmd, "steps": steps, "risks": risks,
+            "note": f"[预演] 模拟在 {branch} 上以 {integrate} 模式实施：{task[:70]}（未做任何改动）"}
+
+
 def _self_test(repo: pathlib.Path) -> tuple[bool, str]:
     """它改完自己后，验证「还能不能启动」：语法编译 + 导入主模块。"""
     pys = [p.name for p in repo.glob("*.py")]
@@ -59,14 +115,17 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     branch = f"crab/{stamp}-{_slug(task)}"
     available = has_hands(executor)
+    base = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "main"
 
-    if dry_run or not available:
-        why = "dry-run" if dry_run else f"未找到 {executor} CLI"
+    if dry_run:
+        return _dry_run_preview(task, repo=repo, branch=branch, base=base,
+                                executor=executor, budget_usd=budget_usd,
+                                integrate=integrate, available=available)
+    if not available:
         return {"ok": False, "branch": branch, "executor": executor,
                 "available": available, "changed": False, "integrate": integrate,
-                "note": f"[{why}] 本应在分支 {branch} 上调 {executor}（{integrate} 模式）实施：{task[:70]}"}
+                "note": f"[未找到 {executor} CLI] 本应在分支 {branch} 上（{integrate} 模式）实施：{task[:70]}"}
 
-    base = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "main"
     if _git(repo, "checkout", "-b", branch).returncode != 0:
         return {"ok": False, "branch": branch, "changed": False,
                 "integrate": integrate, "note": "开分支失败(可能重名)。"}
@@ -75,13 +134,7 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
               "integrate": integrate, "changed": False, "ok": False}
     try:
         # 1) 雇佣爪子改文件：只给「改文件」最小权限，不碰 git / Bash / 联网
-        if executor == "codex":  # 实验性
-            cmd = ["codex", "exec", "--sandbox", "workspace-write", task]
-        else:  # claude(已验证)
-            cmd = ["claude", "-p", task, "--permission-mode", "acceptEdits",
-                   "--allowedTools", "Read Edit Write Glob Grep",
-                   "--disallowedTools", "Bash WebFetch WebSearch",
-                   "--max-budget-usd", str(budget_usd), "--output-format", "text"]
+        cmd = _plan_cmd(task, executor, budget_usd)  # 与预演看到的命令完全一致
         proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, timeout=900)
         result["exit"] = proc.returncode
 

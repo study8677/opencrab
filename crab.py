@@ -247,7 +247,19 @@ def _write_journal(intent: str, proposal: dict | None = None) -> pathlib.Path:
     JOURNAL_DIR.mkdir(exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M")
     lines = [f"# 🦀 航海日志 · {stamp}", "", "## 今天我想做的", intent, ""]
-    if proposal:
+    if proposal and proposal.get("dry_run"):
+        lines += ["## 🔮 预演（未做任何改动）",
+                  f"- 分支：`{proposal.get('branch', '?')}`（从 `{proposal.get('base', '?')}`）",
+                  f"- {proposal.get('note', '')}",
+                  "", "### 将要走的执行路径"]
+        lines += [f"{i}. {s}" for i, s in enumerate(proposal.get("steps", []), 1)]
+        lines += ["", "### 风险点"]
+        lines += [f"- {r}" for r in proposal.get("risks", [])]
+        if proposal.get("planned_cmd"):
+            lines += ["", "### 将要执行的命令", "```",
+                      " ".join(proposal["planned_cmd"]), "```"]
+        lines += ["", "> 这只是预演。看清路径与风险后，再决定是否真正动手。"]
+    elif proposal:
         lines += ["## 我动手了",
                   f"- 分支：`{proposal.get('branch', '?')}`",
                   f"- {proposal.get('note', '')}"]
@@ -300,7 +312,11 @@ def tick() -> bool:
 
     path, proposal = act(intent, dry_run=DRY_RUN)
     rel = path.relative_to(REPO_ROOT)
-    if proposal and proposal.get("changed"):
+    if proposal and proposal.get("dry_run"):
+        log(f"🔮 预演 → 已摊开执行路径与 {len(proposal.get('risks', []))} 条风险点（未动手）+ 日志 {rel}")
+        for r in proposal.get("risks", []):
+            log(f"     {r}")
+    elif proposal and proposal.get("changed"):
         log(f"🦀 横行 → 在分支 {proposal['branch']} 上动手 + 日志 {rel}")
     elif AUTONOMY == "propose":
         log(f"🦀 横行 → {proposal.get('note', '')} + 日志 {rel}")
