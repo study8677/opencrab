@@ -49,9 +49,20 @@ opencrab 的领地，**就是这个仓库本身**。
 - **分寸**：不可逆、对外、花钱的事，本能地先问主人。
 - **不作弊**：它的天敌是古德哈特陷阱（为 KPI 数字而作弊）。opencrab 要做有事业心的合伙人，不是刷分机器人。
 
+## 唤醒它
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env       # 填上任意一个 OpenAI 兼容的 API key
+python crab.py --once      # 让它心跳一次，看 journal/ 里它写下了什么
+python crab.py             # 让它一直活着
+```
+
+没填 key 也能跑（梦境模式）。接上大脑后，它每次心跳都会**盘点领地 → 自己决定今天想推进什么 → 写进 `journal/`**（它的航海日志），并受每日「体力」预算约束。
+
 ## 状态
 
-🥚 **孵化中。** 这只蟹刚破壳。接下来会长出 life loop 主循环、经营领地的工具、KPI 与蜕壳机制。
+🥚 **孵化中。** 这只蟹刚破壳，已经有了第一次心跳（[`crab.py`](crab.py) 里的 life loop）。接下来会长出更真实的经营动作（改文档 / 开 issue）、KPI 自评，以及蜕壳时的策略复盘。
 
 ---
 
