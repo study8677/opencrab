@@ -9,7 +9,8 @@ from . import Result, capability
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-@capability("goldens", "回归比对：关键命令的输出/退出码与黄金样本是否一致")
+@capability("goldens", "回归比对：关键命令的输出/退出码与黄金样本是否一致",
+            category="健康", tags=("regression", "golden", "behavior"))
 def run(ctx: dict) -> Result:
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))

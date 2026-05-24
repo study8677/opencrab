@@ -9,7 +9,8 @@ from . import Result, capability
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-@capability("checkup", "照镜子：关键文件、语法、导入、领地结构是否健康")
+@capability("checkup", "照镜子：关键文件、语法、导入、领地结构是否健康",
+            category="健康", tags=("health", "integrity", "selfcheck"))
 def run(ctx: dict) -> Result:
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))

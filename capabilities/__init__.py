@@ -30,6 +30,14 @@ class Capability:
     summary: str                      # 一句人话说明它干什么
     run: Callable[[dict], "Result"]   # 真正执行：吃一个 ctx，吐一个 Result
     default: bool = True              # 是否默认启用
+    category: str = "通用"            # 归类(给目录分组、按能力组合用)
+    tags: tuple[str, ...] = ()        # 自由标签(给检索、过滤、自动生成清单用)
+
+    def to_meta(self) -> dict:
+        """导出可发现的元数据(纯数据，供清单/目录/外部工具消费)。"""
+        return {"name": self.name, "summary": self.summary,
+                "category": self.category, "tags": list(self.tags),
+                "default": self.default}
 
 
 @dataclasses.dataclass
@@ -46,15 +54,20 @@ _REGISTRY: dict[str, Capability] = {}
 _DISCOVERED = False
 
 
-def capability(name: str, summary: str, *, default: bool = True):
+def capability(name: str, summary: str, *, default: bool = True,
+               category: str = "通用", tags: tuple[str, ...] = ()):
     """装饰器：把一个 `run(ctx) -> Result` 函数登记成一种能力。
 
+    `category` / `tags` 是可发现的元数据：让能力能按归类分组、按标签检索，
+    也让「清单(manifest)」与帮助文本可以自动生成。
     用法见任意 `cap_*.py`。重复登记同名能力会直接报错(防止悄悄覆盖)。
     """
     def deco(fn: Callable[[dict], Result]) -> Callable[[dict], Result]:
         if name in _REGISTRY:
             raise ValueError(f"能力 {name!r} 已被登记，换个名字。")
-        _REGISTRY[name] = Capability(name=name, summary=summary, run=fn, default=default)
+        _REGISTRY[name] = Capability(name=name, summary=summary, run=fn,
+                                     default=default, category=category,
+                                     tags=tuple(tags))
         return fn
     return deco
 
@@ -95,6 +108,29 @@ def enabled_capabilities() -> list[Capability]:
 def get(name: str) -> Capability | None:
     discover()
     return _REGISTRY.get(name)
+
+
+def manifest() -> dict:
+    """🧩 能力清单：所有已登记能力的可发现目录与元数据(纯数据)。
+
+    供 `crab.py manifest` 打印、外部工具消费、或未来「按能力组合」时检索。
+    `by_category` 把能力按归类分好组，方便自动生成帮助与目录。
+    """
+    enabled = {c.name for c in enabled_capabilities()}
+    caps = all_capabilities()
+    by_category: dict[str, list[dict]] = {}
+    items = []
+    for c in caps:
+        meta = {**c.to_meta(), "enabled": c.name in enabled}
+        items.append(meta)
+        by_category.setdefault(c.category, []).append(meta)
+    return {
+        "total": len(caps),
+        "enabled": len(enabled),
+        "categories": sorted(by_category),
+        "by_category": by_category,
+        "capabilities": items,
+    }
 
 
 def run(name: str, ctx: dict | None = None) -> Result:
