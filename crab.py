@@ -239,11 +239,13 @@ def _write_journal(intent: str, proposal: dict | None = None) -> pathlib.Path:
 
 
 def act(intent: str, dry_run: bool = False) -> tuple[pathlib.Path, dict | None]:
-    """🦀 横行：把意图落到领地。propose 模式下借手真改代码(走分支)。"""
+    """🦀 横行：把意图落到领地。propose/merge/publish 下借手真改代码并自我进化。"""
     proposal = None
-    if AUTONOMY == "propose":
+    integrate = {"propose": "branch", "merge": "merge", "publish": "publish"}.get(AUTONOMY)
+    if integrate:
         proposal = hands.use_hands(intent, repo=REPO_ROOT, executor=EXECUTOR,
-                                   budget_usd=HAND_BUDGET, dry_run=dry_run)
+                                   budget_usd=HAND_BUDGET, dry_run=dry_run,
+                                   integrate=integrate)
     return _write_journal(intent, proposal), proposal
 
 
