@@ -182,6 +182,22 @@ def learn_skill(state: dict) -> None:
 
 
 # ── life loop 的各个环节 ─────────────────────────────────────────────
+def _capabilities() -> str:
+    """读出每个 .py 的用途(模块 docstring 首行)，让它看清自己已有的本事。"""
+    import ast
+    caps = []
+    for p in sorted(REPO_ROOT.glob("*.py")):
+        purpose = "?"
+        try:
+            doc = ast.get_docstring(ast.parse(p.read_text("utf-8", errors="ignore")))
+            if doc:
+                purpose = doc.strip().splitlines()[0][:54]
+        except Exception:
+            pass
+        caps.append(f"    - {p.name}：{purpose}")
+    return "\n".join(caps)
+
+
 def sense_territory() -> str:
     """👁️ 盘点领地：它现在的处境怎么样。"""
     journals = sorted(JOURNAL_DIR.glob("*.md")) if JOURNAL_DIR.exists() else []
@@ -190,6 +206,8 @@ def sense_territory() -> str:
     return textwrap.dedent(f"""\
         # 领地现状
         - 仓库根文件: {', '.join(files)}
+        - 你已经拥有的能力(别再重复造这些)：
+{_capabilities()}
         - 已写的航海日志: {len(journals)} 篇
         - 最近提交:
         {textwrap.indent(recent_commits, '          ')}
@@ -204,12 +222,15 @@ def form_intent(territory: str, recent: str) -> tuple[str, int]:
         你已经学会的本事：
         {recall_skills() or '(还没有——你会在蜕壳时把经验提炼成技能)'}
 
-        你最近想做的事(别重复)：
+        你最近几次已经做过的事（绝不要重复，也别只在同一个点上反复打磨）：
         {recent or '(还没有——这是你破壳后的第一次心跳)'}
 
         记住你的使命：让自己持续进化。
-        用 120 字以内写下「今天你最想为自己/领地推进的一件事」，外加一句为什么。
-        只写这一件事，要具体、可落地——最好能真正让自己变得更好。""")
+        现在挑一个和上面**明显不同方向**的新改进——比如：一种全新能力、更强的
+        健壮性/错误处理、自动化测试、给自己加新感官、重构让代码更清晰、写点对外的
+        东西……任何能让你真正更强、而又还没做过的事。
+        用 120 字以内写下「今天你最想推进的这一件新事」，外加一句为什么。
+        要具体、可落地，而且必须和最近做过的明显不同。""")
     return brain(IDENTITY, prompt)
 
 
@@ -271,7 +292,7 @@ def tick() -> bool:
     territory = sense_territory()
     log("👁️  盘点领地完毕")
 
-    recent = "\n".join("- " + i["text"][:60] for i in state["intents"][-3:])
+    recent = "\n".join("- " + i["text"].split("\n")[0][:100] for i in state["intents"][-5:])
     intent, spent = form_intent(territory, recent)
     state["energy_spent_today"] += spent
     log("❤️  生成意图")
