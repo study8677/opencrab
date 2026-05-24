@@ -36,6 +36,7 @@ JOURNAL_DIR = REPO_ROOT / "journal"   # 航海日志：它经营领地的产出(
 SKILLS_DIR = REPO_ROOT / "skills"     # 技能库：它学会的本事(进仓库，是它的资产)
 STATE_DIR = REPO_ROOT / "state"       # 它的记忆(被 .gitignore 忽略)
 STATE_FILE = STATE_DIR / "crab_state.json"
+EVOLUTION_LOG = JOURNAL_DIR / "EVOLUTION.md"   # 演化日志：量化「我到底变强了什么」(进仓库)
 
 
 # ── 配置(自己解析 .env，零依赖)──────────────────────────────────────
@@ -181,6 +182,63 @@ def learn_skill(state: dict) -> None:
     (SKILLS_DIR / f"{stamp}.md").write_text(text.rstrip() + "\n", "utf-8")
 
 
+# ── 状态快照 + 变更摘要：看清自己到底变强了什么 ──────────────────────
+def snapshot() -> dict:
+    """📸 给「此刻的我」拍一张快照：用几个关键指标量化领地的状态。"""
+    py_files = sorted(REPO_ROOT.glob("*.py"))
+    loc = 0
+    for p in py_files:
+        try:
+            loc += len(p.read_text("utf-8", errors="ignore").splitlines())
+        except Exception:
+            pass
+    return {
+        "at": now_iso(),
+        "head": git("rev-parse --short HEAD") or "?",
+        "py_files": len(py_files),
+        "loc": loc,
+        "skills": len(list(SKILLS_DIR.glob("*.md"))) if SKILLS_DIR.exists() else 0,
+        "journals": len(list(JOURNAL_DIR.glob("*.md"))) if JOURNAL_DIR.exists() else 0,
+    }
+
+
+# 哪些指标值得追踪，以及人话标签
+_SNAP_LABELS = {"py_files": "Python 文件", "loc": "代码行数",
+                "skills": "已学技能", "journals": "航海日志"}
+
+
+def diff_snapshot(before: dict, after: dict) -> list[str]:
+    """量出两张快照之间「我变了什么」，只列真正发生变化的关键差异。"""
+    diffs = []
+    for k, label in _SNAP_LABELS.items():
+        d = after.get(k, 0) - before.get(k, 0)
+        if d:
+            diffs.append(f"{label} {before.get(k, 0)}→{after.get(k, 0)}（{d:+d}）")
+    if before.get("head") != after.get("head"):
+        diffs.append(f"主干 HEAD {before.get('head')}→{after.get('head')}")
+    return diffs
+
+
+def record_evolution(intent: str, before: dict, after: dict,
+                     proposal: dict | None) -> list[str]:
+    """📈 把这次心跳的「快照差异」追加进演化日志，返回可读的变更摘要。
+    主干指标没变(如 branch 模式改动只在分支)时，退回看爪子的 diffstat。"""
+    diffs = diff_snapshot(before, after)
+    if not diffs and proposal and proposal.get("diffstat"):
+        diffs = ["（改动留在分支，未并入主干）",
+                 *("  " + ln for ln in proposal["diffstat"].splitlines())]
+    summary = diffs or ["（这次心跳没有改变领地的关键指标）"]
+
+    JOURNAL_DIR.mkdir(exist_ok=True)
+    head = "# 🦀 演化日志\n\n> 每次心跳前后给自己拍快照，量出到底变强了什么。\n"
+    old = EVOLUTION_LOG.read_text("utf-8") if EVOLUTION_LOG.exists() else head
+    intent_line = intent.split("\n")[0][:60]
+    block = [f"\n## {after['at']} · {after['head']}", f"- 意图：{intent_line}",
+             "- 变化：", *(f"  - {d}" for d in summary)]
+    EVOLUTION_LOG.write_text(old.rstrip() + "\n" + "\n".join(block) + "\n", "utf-8")
+    return summary
+
+
 # ── life loop 的各个环节 ─────────────────────────────────────────────
 def _capabilities() -> str:
     """读出每个 .py 的用途(模块 docstring 首行)，让它看清自己已有的本事。"""
@@ -310,6 +368,7 @@ def tick() -> bool:
     log("❤️  生成意图")
     log(textwrap.indent(intent, "     "))
 
+    before = snapshot()
     path, proposal = act(intent, dry_run=DRY_RUN)
     rel = path.relative_to(REPO_ROOT)
     if proposal and proposal.get("dry_run"):
@@ -322,6 +381,11 @@ def tick() -> bool:
         log(f"🦀 横行 → {proposal.get('note', '')} + 日志 {rel}")
     else:
         log(f"🦀 横行 → 写下 {rel}")
+
+    # 📈 演化日志：拍后置快照，量出这次到底变强了什么(预演不算改变)
+    if not (proposal and proposal.get("dry_run")):
+        summary = record_evolution(intent, before, snapshot(), proposal)
+        log("📈 变更摘要：" + "；".join(summary))
 
     # 📝 沉淀
     state["ticks"] += 1
