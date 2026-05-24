@@ -4,7 +4,12 @@ opencrab 的镜子 🪞 —— 领地自检(self-check)。
 
 每次变化前后照一次镜子：Python 版本够不够新、关键文件还在不在、
 Python 还编不编得过、主模块还导不导得入、领地结构还完不完整、
-依赖与 .env 配置齐不齐(并给出可操作的修复建议)。一条命令看清自己当下的健康。
+依赖与 .env 配置齐不齐、仓库各处还互不互相对得上(并给出可操作的修复建议)。
+一条命令看清自己当下的健康。
+
+「仓库完整性校验」专挑「长歪了」的隐性破损：README 里提到的脚本是不是真存在、
+crab.py 实际读取的配置键是不是都在 .env.example 里有文档、checkup 自己的校验表
+是否还和 .env.example 对得上。这类不一致不会让程序立刻崩，却会慢慢让仓库自相矛盾。
 
 环境检查刻意宽容「梦境模式」：没填 OPENCRAB_API_KEY、没装执行器 CLI
 都不算病(它本就能不接大脑空跑)；只有结构性错误——.env 缺键、数字填成乱码、
@@ -22,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -237,9 +243,68 @@ def check_env_config() -> list[tuple[bool, str, str]]:
     return out
 
 
+# 运行时(crab/hands)读取、但又是内部/调试用、不必写进 .env.example 的键。
+# 放进来表示「故意不对外暴露」，免得完整性校验把它误报成漏文档。
+INTERNAL_ENV = {"OPENCRAB_DRY_RUN"}
+
+# 跑完整性校验时，从源码里捞 OPENCRAB_* 配置键用的正则。
+_ENV_GET_RE = re.compile(r'os\.environ\.(?:get|setdefault)\(\s*["\'](OPENCRAB_[A-Z_]+)["\']')
+# README 里被反引号 / 代码块提到的项目内文件(只认 .py / .md，.env 由用户现造不算)。
+_REF_FILE_RE = re.compile(r'`([A-Za-z0-9_./-]+\.(?:py|md))`')
+
+
+def _read_env_keys_from_source(*names: str) -> set[str]:
+    """从给定源码文件里捞出所有被读取的 OPENCRAB_* 配置键。"""
+    keys: set[str] = set()
+    for name in names:
+        p = REPO_ROOT / name
+        if p.is_file():
+            keys.update(_ENV_GET_RE.findall(p.read_text("utf-8")))
+    return keys
+
+
+def check_repo_integrity() -> list[tuple[bool, str, str]]:
+    """🧩 仓库完整性：README/配置/脚本三者还互相对得上吗(防「长歪了」)。"""
+    out: list[tuple[bool, str, str]] = []
+
+    # 1) README 里点名提到的脚本/文档，是否真的还在仓库里(防引用悬空)。
+    readme = REPO_ROOT / "README.md"
+    if readme.is_file():
+        refs = sorted(set(_REF_FILE_RE.findall(readme.read_text("utf-8"))))
+        missing = [r for r in refs if not (REPO_ROOT / r).exists()]
+        out.append(_ok("README 引用", f"提到的 {len(refs)} 个文件都在")
+                   if not missing else
+                   _bad("README 引用",
+                        f"提到却不存在：{', '.join(missing)} — 修复：补上文件，或从 README 删掉这些引用"))
+
+    # 2) crab/hands 实际读取的配置键，是否都在 .env.example 里有文档(防隐藏旋钮)。
+    example = REPO_ROOT / ".env.example"
+    if example.is_file():
+        documented = set(_parse_env_file(example))
+        used = _read_env_keys_from_source("crab.py", "hands.py")
+        undocumented = sorted(used - documented - INTERNAL_ENV)
+        out.append(_ok("配置文档同步", f"代码读取的 {len(used - INTERNAL_ENV)} 个键都在 .env.example 里")
+                   if not undocumented else
+                   _bad("配置文档同步",
+                        f"代码读取却没写进 .env.example：{', '.join(undocumented)} — "
+                        f"修复：在 .env.example 补上这些键(或加进 checkup 的 INTERNAL_ENV 表示故意内部用)"))
+
+        # 3) checkup 自己的校验表(数值/枚举)是否还指向 .env.example 里真有的键(防校验跑偏)。
+        validated = set(NUMERIC_ENV) | set(ENUM_ENV)
+        stale = sorted(validated - documented)
+        out.append(_ok("校验表对齐", f"checkup 校验的 {len(validated)} 个键都在 .env.example 里")
+                   if not stale else
+                   _bad("校验表对齐",
+                        f"checkup 在校验 .env.example 里没有的键：{', '.join(stale)} — "
+                        f"修复：让 NUMERIC_ENV/ENUM_ENV 与 .env.example 对齐"))
+
+    return out
+
+
 CHECKS = [check_python_version, check_vital_files, check_vital_dirs,
           check_python_compiles, check_main_imports,
-          check_dependencies, check_env_config, check_git_clean]
+          check_dependencies, check_env_config,
+          check_repo_integrity, check_git_clean]
 
 
 def run() -> tuple[bool, list[tuple[bool, str, str]]]:
