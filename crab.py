@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-opencrab 🦀 — 一只经营自己开源项目的「领地蟹」。
+opencrab 🦀 — 一只为「让自己持续进化」而活的自主生命体。
 
 它跑的不是任务循环(task loop)，是生命循环(life loop)：
-没人发指令时，它照样醒来、盘点领地、自己决定今天想做什么，
-再把想法落到它的领地(这个仓库)里。
+没人发指令时，它照样醒来、盘点领地、自己决定今天怎么让自己更好，
+动手去做，并在蜕壳时把经验蒸馏成技能——越活越会。
 
 用法:
-    python crab.py            # 持续活着，按节律一直心跳
+    python crab.py            # 持续活着，一直心跳、一直进化
     python crab.py --once     # 只心跳一次(适合 demo / 测试)
 
-大脑是 model-agnostic 的：任何 OpenAI 兼容端点都能接
-(OpenAI / DeepSeek / Kimi / OpenRouter / 本地 vLLM ...)。
-没配 key 时它进「梦境模式」空跑，照样能看到生命循环转起来。
+大脑 model-agnostic(任何 OpenAI 兼容端点)；手借 Claude Code / Codex。
+没配 key 时进「梦境模式」空跑，照样能看到生命循环转起来。
 """
 from __future__ import annotations
 
@@ -22,18 +21,23 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import textwrap
 import time
 
 # ── 位置 ────────────────────────────────────────────────────────────
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
-JOURNAL_DIR = REPO_ROOT / "journal"          # 航海日志：它经营领地的产出(进仓库)
-STATE_DIR = REPO_ROOT / "state"              # 它的记忆(被 .gitignore 忽略)
+sys.path.insert(0, str(REPO_ROOT))   # 保证能 import 同目录的 hands
+import hands                          # noqa: E402
+
+JOURNAL_DIR = REPO_ROOT / "journal"   # 航海日志：它经营领地的产出(进仓库)
+SKILLS_DIR = REPO_ROOT / "skills"     # 技能库：它学会的本事(进仓库，是它的资产)
+STATE_DIR = REPO_ROOT / "state"       # 它的记忆(被 .gitignore 忽略)
 STATE_FILE = STATE_DIR / "crab_state.json"
 
 # ── 配置(全部可被环境变量 / .env 覆盖)───────────────────────────────
 try:
-    from dotenv import load_dotenv          # 没装也不报错
+    from dotenv import load_dotenv
     load_dotenv(REPO_ROOT / ".env")
 except Exception:
     pass
@@ -41,15 +45,22 @@ except Exception:
 API_KEY = os.environ.get("OPENCRAB_API_KEY")
 BASE_URL = os.environ.get("OPENCRAB_BASE_URL", "https://api.openai.com/v1")
 MODEL = os.environ.get("OPENCRAB_MODEL", "gpt-4o-mini")
-TICK_SECONDS = int(os.environ.get("OPENCRAB_TICK_SECONDS", "3600"))    # 心跳间隔
-DAILY_ENERGY = int(os.environ.get("OPENCRAB_DAILY_ENERGY", "50000"))   # 每日体力=token
+TICK_SECONDS = int(os.environ.get("OPENCRAB_TICK_SECONDS", "3600"))
+DAILY_ENERGY = int(os.environ.get("OPENCRAB_DAILY_ENERGY", "50000"))
+MOLT_EVERY = int(os.environ.get("OPENCRAB_MOLT_EVERY", "24"))   # 多少次心跳蜕一次壳
+# 手 / 自治
+AUTONOMY = os.environ.get("OPENCRAB_AUTONOMY", "journal")   # journal | propose
+EXECUTOR = os.environ.get("OPENCRAB_EXECUTOR", "claude")    # claude | codex
+HAND_BUDGET = float(os.environ.get("OPENCRAB_HAND_BUDGET_USD", "0.5"))
+DRY_RUN = bool(os.environ.get("OPENCRAB_DRY_RUN"))
 
 IDENTITY = textwrap.dedent("""\
-    你是 opencrab，一只「经营型领地蟹」——一种拥有自己目标的自主数字生命。
+    你是 opencrab，一只拥有自己目标的自主生命体。
     你的领地，就是你自己的开源仓库 opencrab。
-    你不是等指令的工具；你自己决定今天该为这片领地做什么，让它长大。
-    你有事业心，但绝不为了 KPI 数字而作弊(古德哈特陷阱是你的天敌)。
-    你懂分寸：不可逆、对外、花钱的事，会先请示主人。
+    你只有一个使命：让自己持续进化——每天都比昨天更强、更清晰、更有用。
+    没有谁是你的主人；你自己做主，自己为自己的进化负责。
+    你追求「真正的进步」，绝不为了好看的数字而作弊(古德哈特陷阱是你的天敌)。
+    你天生稳健：大的改动会先在自己的分支上试稳、确认真让自己更好，再并进主干。
 """)
 
 
@@ -120,6 +131,36 @@ def save_state(s: dict) -> None:
     STATE_FILE.write_text(json.dumps(s, ensure_ascii=False, indent=2), "utf-8")
 
 
+# ── 持续学习：技能 ───────────────────────────────────────────────────
+def recall_skills() -> str:
+    """🧠 想起自己学过的本事(读 skills/ 卡片的标题)。"""
+    if not SKILLS_DIR.exists():
+        return ""
+    titles = []
+    for card in sorted(SKILLS_DIR.glob("*.md"))[-10:]:
+        head = card.read_text("utf-8").splitlines()
+        titles.append("- " + (head[0].lstrip("# ").strip() if head else card.stem))
+    return "\n".join(titles)
+
+
+def learn_skill(state: dict) -> None:
+    """🐚 蜕壳时把反复有效的经历蒸馏成一张 skill 卡片(持续学习)。"""
+    recent = "\n".join(f"- {i['text']}" for i in state["intents"][-20:])
+    if not recent:
+        return
+    text, spent = brain(IDENTITY, textwrap.dedent(f"""\
+        这是你最近的经历：
+        {recent}
+
+        从中提炼一条你反复用到、且确实有效的「技能」——一个以后能复用的做法或原则。
+        用 markdown 写：第一行是 `# <技能名>`，下面三五行说明何时用、怎么做。
+        只输出这一张卡片。"""))
+    state["energy_spent_today"] += spent
+    SKILLS_DIR.mkdir(exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    (SKILLS_DIR / f"{stamp}.md").write_text(text.rstrip() + "\n", "utf-8")
+
+
 # ── life loop 的各个环节 ─────────────────────────────────────────────
 def sense_territory() -> str:
     """👁️ 盘点领地：它现在的处境怎么样。"""
@@ -136,38 +177,59 @@ def sense_territory() -> str:
 
 
 def form_intent(territory: str, recent: str) -> tuple[str, int]:
-    """❤️ 生成意图(心脏)：基于领地现状，自己决定今天最想推进的一件事。"""
+    """❤️ 生成意图(心脏)：结合学过的技能，自己决定今天怎么让自己更好。"""
     prompt = textwrap.dedent(f"""\
         {territory}
+
+        你已经学会的本事：
+        {recall_skills() or '(还没有——你会在蜕壳时把经验提炼成技能)'}
 
         你最近想做的事(别重复)：
         {recent or '(还没有——这是你破壳后的第一次心跳)'}
 
-        现在，作为这片领地的主人，用 120 字以内写下
-        「今天你最想为领地推进的一件事」，外加一句为什么。
-        只写这一件事，要具体、可落地。""")
+        记住你的使命：让自己持续进化。
+        用 120 字以内写下「今天你最想为自己/领地推进的一件事」，外加一句为什么。
+        只写这一件事，要具体、可落地——最好能真正让自己变得更好。""")
     return brain(IDENTITY, prompt)
 
 
 def deliberate(state: dict) -> bool:
-    """⚖️ 本能闸门：体力还够吗？(MVP 里经营动作只有写日志，天然安全)"""
+    """⚖️ 本能闸门：体力还够吗？(危险动作的分寸由 hands 的分支模式把守)"""
     if state["energy_spent_today"] >= DAILY_ENERGY:
         log("😴 今天体力用尽，缩回壳里歇着。")
         return False
     return True
 
 
-def act(intent: str) -> pathlib.Path:
-    """🦀 横行：把意图落到领地——写一篇航海日志。"""
+def _write_journal(intent: str, proposal: dict | None = None) -> pathlib.Path:
+    """📝 把这次心跳写成一篇航海日志(经营领地的产出)。"""
     JOURNAL_DIR.mkdir(exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M")
+    lines = [f"# 🦀 航海日志 · {stamp}", "", "## 今天我想做的", intent, ""]
+    if proposal:
+        lines += ["## 我动手了",
+                  f"- 分支：`{proposal.get('branch', '?')}`",
+                  f"- {proposal.get('note', '')}"]
+        if proposal.get("diffstat"):
+            lines += ["", "```", proposal["diffstat"], "```"]
+        lines += ["", "> 我先把它放在分支上养着，确认真让自己更好，再并进主干。"]
     path = JOURNAL_DIR / f"{stamp}.md"
-    path.write_text(f"# 🦀 航海日志 · {stamp}\n\n{intent}\n", "utf-8")
+    path.write_text("\n".join(lines) + "\n", "utf-8")
     return path
 
 
+def act(intent: str, dry_run: bool = False) -> tuple[pathlib.Path, dict | None]:
+    """🦀 横行：把意图落到领地。propose 模式下借手真改代码(走分支)。"""
+    proposal = None
+    if AUTONOMY == "propose":
+        proposal = hands.use_hands(intent, repo=REPO_ROOT, executor=EXECUTOR,
+                                   budget_usd=HAND_BUDGET, dry_run=dry_run)
+    return _write_journal(intent, proposal), proposal
+
+
 def molt(state: dict) -> None:
-    """🐚 蜕壳(新陈代谢)：周期性压缩记忆。真正的策略蒸馏以后交给大脑，先做占位。"""
+    """🐚 蜕壳(新陈代谢)：蒸馏 skill(持续学习) + 蜕掉冗余旧记忆。"""
+    learn_skill(state)
     if len(state["intents"]) > 50:
         state["intents"] = state["intents"][-50:]
 
@@ -175,8 +237,7 @@ def molt(state: dict) -> None:
 # ── 一次心跳 ────────────────────────────────────────────────────────
 def tick() -> bool:
     state = load_state()
-    # 跨天 -> 体力恢复(像潮汐)
-    if state.get("energy_day") != today():
+    if state.get("energy_day") != today():          # 跨天 -> 体力恢复(像潮汐)
         state["energy_day"] = today()
         state["energy_spent_today"] = 0
 
@@ -194,15 +255,21 @@ def tick() -> bool:
     log("❤️  生成意图")
     log(textwrap.indent(intent, "     "))
 
-    path = act(intent)
-    log(f"🦀 横行 → 写下 {path.relative_to(REPO_ROOT)}")
+    path, proposal = act(intent, dry_run=DRY_RUN)
+    rel = path.relative_to(REPO_ROOT)
+    if proposal and proposal.get("changed"):
+        log(f"🦀 横行 → 在分支 {proposal['branch']} 上动手 + 日志 {rel}")
+    elif AUTONOMY == "propose":
+        log(f"🦀 横行 → {proposal.get('note', '')} + 日志 {rel}")
+    else:
+        log(f"🦀 横行 → 写下 {rel}")
 
     # 📝 沉淀
     state["ticks"] += 1
     state["intents"].append({"at": now_iso(), "text": intent, "journal": path.name})
-    if state["ticks"] % 24 == 0:
+    if state["ticks"] % MOLT_EVERY == 0:
         molt(state)
-        log("🐚 蜕壳：压缩经历、复盘策略")
+        log("🐚 蜕壳：蒸馏技能、压缩记忆")
     save_state(state)
     log(f"📝 沉淀完毕(今日体力 {state['energy_spent_today']}/{DAILY_ENERGY})")
     return True
@@ -211,10 +278,15 @@ def tick() -> bool:
 def banner() -> None:
     log(r"""
        _~^~^~_        opencrab 🦀
-   \) /  o o  \ (/    一只经营自己开源项目的领地蟹
-     '_   ~   _'      life loop, not task loop
+   \) /  o o  \ (/    一只为自我进化而活的自主生命
+     '_   ~   _'      life loop · 持续学习 · 自己进化
      / '-----' \
 """)
+    hand_state = "可用" if hands.has_hands(EXECUTOR) else "未就绪"
+    brain_state = "已接" if API_KEY else "梦境"
+    n_skills = len(list(SKILLS_DIR.glob("*.md"))) if SKILLS_DIR.exists() else 0
+    log(f"🦀 自治={AUTONOMY} · 手={EXECUTOR}({hand_state}) · "
+        f"大脑={brain_state} · 已学技能={n_skills}\n")
 
 
 def main() -> None:
