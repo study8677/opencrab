@@ -6,9 +6,13 @@ opencrab 🦀 — 一只为「让自己持续进化」而活的自主生命体�
 没人发指令时，它照样醒来、盘点领地、自己决定今天怎么让自己更好，
 动手去做，并在蜕壳时把经验蒸馏成技能——越活越会。
 
-用法:
-    python crab.py            # 持续活着，一直心跳、一直进化
-    python crab.py --once     # 只心跳一次(适合 demo / 测试)
+用法(子命令式入口，跑 `python crab.py --help` 看全貌):
+    python crab.py [live]        # 持续活着，一直心跳、一直进化(默认子命令)
+    python crab.py once          # 只心跳一次(适合 demo / 测试)
+    python crab.py caps          # 列出全部可插拔能力及启用状态
+    python crab.py cap <NAME>    # 单独运行一种能力后退出
+    python crab.py replay        # 回放结构化运行审计：看自己怎么思考、怎么出错
+(旧旗标 --once / --caps / --cap 仍兼容，等价于对应子命令。)
 
 零第三方依赖：大脑通过 urllib 直连任何 OpenAI 兼容端点，手借 Claude Code / Codex。
 没配 key 时进「梦境模式」空跑，照样能看到生命循环转起来。
@@ -417,29 +421,20 @@ def banner() -> None:
     log(f"🧩 已启用能力：{caps}\n")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="opencrab — 一只自主数字生命")
-    ap.add_argument("--once", action="store_true", help="只心跳一次")
-    ap.add_argument("--caps", action="store_true", help="列出全部可插拔能力后退出")
-    ap.add_argument("--cap", metavar="NAME", help="单独运行一种能力后退出")
-    args = ap.parse_args()
+def _die(msg: str) -> "NoReturn":   # noqa: F821  统一的参数错误出口
+    """参数不合法时，给一条人话错误提示再退出(退出码 2，和 argparse 一致)。"""
+    log(f"❌ {msg}")
+    sys.exit(2)
 
-    if args.caps:
-        enabled = {c.name for c in capabilities.enabled_capabilities()}
-        for c in capabilities.all_capabilities():
-            log(f"  {'🟢' if c.name in enabled else '⚪'} {c.name} — {c.summary}")
-        return
-    if args.cap:
-        r = capabilities.run(args.cap)
-        log(f"{'✅' if r.ok else '❌'} {args.cap}：{r.summary}")
-        if r.detail:
-            log(textwrap.indent(r.detail, "     "))
-        sys.exit(0 if r.ok else 1)
 
+# ── 各子命令的处理函数(每个吃解析好的 args，自己负责退出码)──────────────
+def _cmd_live(args: argparse.Namespace) -> None:
+    """持续心跳，一直活着、一直进化；`--once` 则只跳一次。"""
     banner()
+    once = bool(getattr(args, "once", False))
     audit.record("startup", autonomy=AUTONOMY, executor=EXECUTOR,
-                 dreaming=not API_KEY, once=args.once, tick_seconds=TICK_SECONDS)
-    if args.once:
+                 dreaming=not API_KEY, once=once, tick_seconds=TICK_SECONDS)
+    if once:
         _safe_tick()
         audit.record("exit", reason="once")
         return
@@ -452,6 +447,102 @@ def main() -> None:
     except KeyboardInterrupt:
         log("\n🦀 缩回壳里，下次见。")
         audit.record("exit", reason="interrupt")
+
+
+def _cmd_caps(args: argparse.Namespace) -> None:
+    """列出全部可插拔能力及其启用状态。"""
+    enabled = {c.name for c in capabilities.enabled_capabilities()}
+    for c in capabilities.all_capabilities():
+        log(f"  {'🟢' if c.name in enabled else '⚪'} {c.name} — {c.summary}")
+
+
+def _cmd_cap(args: argparse.Namespace) -> None:
+    """单独运行一种能力；能力不存在或失败 -> 退出码 1。"""
+    name = args.name
+    r = capabilities.run(name)
+    log(f"{'✅' if r.ok else '❌'} {name}：{r.summary}")
+    if r.detail:
+        log(textwrap.indent(r.detail, "     "))
+    sys.exit(0 if r.ok else 1)
+
+
+def _cmd_replay(args: argparse.Namespace) -> None:
+    """回放结构化运行审计：把某天的 JSONL 记录归纳并逐条摊开。"""
+    day = args.day or today()
+    try:
+        datetime.date.fromisoformat(day)
+    except ValueError:
+        _die(f"--day 需要 YYYY-MM-DD 格式，收到 {day!r}")
+    if args.limit is not None and args.limit <= 0:
+        _die(f"--limit 需要正整数，收到 {args.limit}")
+
+    recs = audit.read_records(day, limit=args.limit)
+    if not recs:
+        log(f"🧾 {day} 没有审计记录(state/audit/{day}.jsonl 不存在或为空)。")
+        return
+    s = audit.summarize(recs)
+    log(f"🧾 回放 {day} · 共 {s['total']} 条 · {s['runs']} 次进程 · {s['failures']} 次失败")
+    log("   事件分布：" + "，".join(f"{k}×{v}" for k, v in sorted(s["events"].items())))
+    log("")
+    for r in recs:
+        ts = r.get("ts", "?")[-12:]
+        ev = r.get("event", "?")
+        extra = {k: v for k, v in r.items()
+                 if k not in ("ts", "run_id", "seq", "event")}
+        tail = "  " + json.dumps(extra, ensure_ascii=False) if extra else ""
+        log(f"  #{str(r.get('seq', '?')):>3} {ts} {ev}{tail}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """搭一套子命令式的 CLI；不带子命令时默认走 `live`。"""
+    ap = argparse.ArgumentParser(
+        prog="crab.py",
+        description="opencrab 🦀 — 一只自主数字生命的命令入口",
+        epilog="不带子命令时默认 `live`：持续心跳、一直进化。",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # 旧版顶层旗标(隐藏)：等价于对应子命令，保持既有脚本与回归样本不破。
+    ap.add_argument("--once", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--caps", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--cap", metavar="NAME", help=argparse.SUPPRESS)
+
+    sub = ap.add_subparsers(dest="command", metavar="<子命令>")
+
+    p_live = sub.add_parser("live", help="持续心跳，一直活着、一直进化(默认)")
+    p_live.add_argument("--once", action="store_true", help="只心跳一次后退出")
+    p_live.set_defaults(func=_cmd_live)
+
+    p_once = sub.add_parser("once", help="只心跳一次(适合 demo / 测试)")
+    p_once.set_defaults(func=_cmd_live, once=True)
+
+    p_caps = sub.add_parser("caps", help="列出全部可插拔能力及启用状态")
+    p_caps.set_defaults(func=_cmd_caps)
+
+    p_cap = sub.add_parser("cap", help="单独运行一种能力后退出")
+    p_cap.add_argument("name", metavar="NAME", help="能力名(见 `crab.py caps`)")
+    p_cap.set_defaults(func=_cmd_cap)
+
+    p_replay = sub.add_parser("replay", help="回放运行审计：看自己怎么思考、怎么出错")
+    p_replay.add_argument("--day", metavar="YYYY-MM-DD", help="回放哪一天(默认今天)")
+    p_replay.add_argument("--limit", type=int, metavar="N", help="只看最近 N 条")
+    p_replay.set_defaults(func=_cmd_replay)
+
+    return ap
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+
+    # 没给子命令时，先看旧旗标(向后兼容)，再回落到默认的 live。
+    if args.command is None:
+        if args.caps:
+            return _cmd_caps(args)
+        if args.cap:
+            args.name = args.cap
+            return _cmd_cap(args)
+        return _cmd_live(args)   # 无参或 --once
+
+    args.func(args)
 
 
 def _safe_tick() -> bool:
