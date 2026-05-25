@@ -275,6 +275,16 @@ def sense_territory() -> str:
     """)
 
 
+def _recall_lessons(recent: str) -> str:
+    """从情境记忆里捞相似往事，拼成教训提示（出错不反噬，绝不弄死决策）。"""
+    try:
+        import memory
+        tip = memory.advise(recent)
+        return f"📒 似曾相识（来自记忆，别重蹈覆辙）：\n{tip}\n" if tip else ""
+    except Exception:
+        return ""
+
+
 def form_intent(territory: str, recent: str) -> tuple[str, int]:
     """❤️ 生成意图(心脏)：结合学过的技能 + 眺望 GitHub 的外部灵感，决定怎么让自己更好。"""
     try:
@@ -282,6 +292,12 @@ def form_intent(territory: str, recent: str) -> tuple[str, int]:
         horizon = lookout.scout("autonomous self-improving AI agent")
     except Exception as e:
         horizon = f"(瞭望塔暂时看不清：{e})"
+    # ⚖️ 体型自检：模块越多越要警惕"只加不减"，把臃肿变精炼也是进步
+    _pys = sorted(REPO_ROOT.glob("*.py"))
+    _loc = sum(len(p.read_text("utf-8", errors="ignore").splitlines()) for p in _pys)
+    girth = (f"你现在有 {len(_pys)} 个模块、约 {_loc} 行代码——已经不算小了，"
+             "其中一些功能明显重叠（多方案 simulator/arena；外部学习 lookout/mentor；"
+             "诊断 checkup/probe/envcheck/smoke；黄金路径 goldens/goldenpath）。")
     prompt = textwrap.dedent(f"""\
         {territory}
 
@@ -295,12 +311,15 @@ def form_intent(territory: str, recent: str) -> tuple[str, int]:
         {recent or '(还没有——这是你破壳后的第一次心跳)'}
 
         {_recall_lessons(recent)}
-        记住你的使命：让自己持续进化。
-        现在挑一个和上面**明显不同方向**的新改进——大胆借鉴外面世界的思路
-        （记忆、规划、工具调用、多模态、对外交互……），长出一种你**还没有的全新能力**，
-        而不是继续在自我诊断/可靠性里打转。
-        用 120 字以内写下「今天你最想推进的这一件新事」，外加一句为什么。
-        要具体、可落地，必须和最近做过的明显不同。""")
+        ⚖️ 体型自检：{girth}
+        真正的进步不只是"加新东西"——把臃肿的自己变精炼，往往更难、也更值钱。
+        如果你已经够大、或发现明显重叠/重复的模块，这次就**做一次瘦身**：
+        合并冗余、删掉重复、重构让结构更清晰、收敛成统一入口——而不是再加新模块。
+        只有当你确实缺一个全新维度时，才加新东西。
+
+        记住你的使命：让自己持续进化（变强，也包括变精炼）。
+        用 120 字以内写下「今天你最想推进的这一件事」，外加一句为什么。
+        要具体、可落地。""")
     return brain(IDENTITY, prompt)
 
 
