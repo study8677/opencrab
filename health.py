@@ -355,7 +355,291 @@ def self_check_run() -> tuple[bool, list[tuple[bool, str, str]]]:
     return healthy, results
 
 
-import probe
+# ── 依赖/工具/配置探针(probe)：原 probe.py 已并入此处 ─────────────────
+# 「够不够得着」那一层：解释器够不够新、本体 import 的标准库在不在、自我进化要
+# 借的外部命令(git/执行器)装没装、requirements.txt 声明的第三方包能不能 import
+# 且版本符不符合约束；以及配置对不对齐(.env 缺键/孤儿键/数值/枚举/大脑钥匙)。
+# 复用上面的 Finding / _ok-_warn-_err / summarize / _MARK / parse_env_file /
+# NUMERIC_ENV / ENUM_ENV / MIN_PYTHON，不再各抄一份。探针分两族:
+#   RUNTIME_PROBES —— 运行时够不够得着(probe 层)；
+#   ENV_PROBES     —— 配置一致性(env 层，原 envcheck)。
+
+# 本体代码确实 import 的标准库模块——它们理应随 Python 一起在，但精简版/
+# 裁剪过的解释器(某些容器镜像)可能缺，缺了对应能力会在运行半途崩。
+STDLIB_NEEDED = [
+    "json", "urllib.request", "importlib.metadata",
+    "ast", "subprocess", "dataclasses", "argparse",
+]
+
+# 自我进化要借的外部命令：(命令, 是否致命, 取版本的参数, 缺了的说明/修复)。
+#   git 是硬依赖——盘点领地、记录演化、借手改代码都靠它；缺了基本动不了。
+EXTERNAL_TOOLS = [
+    ("git", True, ("--version",),
+     "装 git 并加入 PATH —— 盘点领地、记录演化、借手改代码都靠它"),
+]
+
+# 运行时确实会读、但故意不写进 .env.example 的内部键(免得 probe 把它当孤儿误报)。
+# 注意与上面 check_repo_integrity 用的 INTERNAL_ENV 用途不同，故各自独立。
+PROBE_INTERNAL_ENV = {"OPENCRAB_DRY_RUN", "OPENCRAB_CAPABILITIES"}
+
+
+# ── 探测项 ──────────────────────────────────────────────────────────
+def probe_python() -> list[Finding]:
+    """🐍 跑它的解释器够不够新(语法/标准库的硬底线)。"""
+    cur = sys.version_info[:3]
+    ver = ".".join(map(str, cur))
+    need = ".".join(map(str, MIN_PYTHON))
+    if cur[:2] < MIN_PYTHON:
+        return [_err("Python 解释器", f"当前 {ver}，低于所需 ≥ {need}",
+                     f"装一个 ≥ {need} 的 Python(如 pyenv install)再重跑")]
+    return [_ok("Python 解释器", f"{ver}（≥ {need}）")]
+
+
+def probe_stdlib() -> list[Finding]:
+    """📚 本体 import 的标准库模块在不在(精简解释器可能缺)。"""
+    import importlib.util
+    missing = []
+    for mod in STDLIB_NEEDED:
+        try:
+            if importlib.util.find_spec(mod) is None:
+                missing.append(mod)
+        except (ImportError, ValueError):
+            missing.append(mod)
+    if missing:
+        return [_err("标准库模块", f"找不到：{', '.join(missing)}",
+                     "你的 Python 像是被裁剪过——换一个完整的官方发行版")]
+    return [_ok("标准库模块", f"{len(STDLIB_NEEDED)} 个本体依赖项均可加载")]
+
+
+def _tool_version(cmd: str, ver_args: tuple[str, ...]) -> str:
+    """探一个外部命令的版本串(取首行)；探不到返回空串。"""
+    try:
+        r = subprocess.run([cmd, *ver_args], capture_output=True,
+                           text=True, timeout=10)
+    except Exception:
+        return ""
+    out = (r.stdout or r.stderr or "").strip().splitlines()
+    return out[0].strip() if out else ""
+
+
+def probe_external_tools() -> list[Finding]:
+    """🔧 硬依赖的外部命令(git)装没装、够不够得着。"""
+    out: list[Finding] = []
+    for cmd, fatal, ver_args, fix in EXTERNAL_TOOLS:
+        where = shutil.which(cmd)
+        if not where:
+            mk = _err if fatal else _warn
+            out.append(mk(f"命令 {cmd}", "未在 PATH 中找到", fix))
+            continue
+        ver = _tool_version(cmd, ver_args)
+        out.append(_ok(f"命令 {cmd}", ver or where))
+    return out
+
+
+def probe_executor() -> list[Finding]:
+    """✋ 它的「手」依赖的执行器 CLI(claude/codex)在不在。
+
+    只在 propose/merge/publish 自治档真正动手时需要；journal/梦境模式没有也能活，
+    所以缺了只判 warn——丢的是「动手改代码」这部分能力，不是命脉。
+    """
+    env = parse_env_file(REPO_ROOT / ".env")
+    executor = env.get("OPENCRAB_EXECUTOR", "claude")
+    autonomy = env.get("OPENCRAB_AUTONOMY", "journal")
+    where = shutil.which(executor)
+    if where:
+        ver = _tool_version(executor, ("--version",))
+        return [_ok(f"执行器 {executor}", ver or where)]
+    if autonomy in ("propose", "merge", "publish"):
+        return [_err(f"执行器 {executor}",
+                     f"未找到，但 OPENCRAB_AUTONOMY={autonomy} 要靠它动手改代码",
+                     f"装好 {executor} 并加入 PATH，或把 OPENCRAB_AUTONOMY 调回 journal")]
+    return [_warn(f"执行器 {executor}",
+                  f"未找到(当前 autonomy={autonomy}，无手仍能活)",
+                  f"想让它真正动手改代码：装好 {executor} 并加入 PATH")]
+
+
+def _parse_requirement(line: str) -> tuple[str, list[tuple[str, str]]] | None:
+    """把一行 requirement 解析成 (包名, [(运算符, 版本), ...])；解析不了返回 None。"""
+    line = line.split("#", 1)[0].strip()
+    if not line or line.startswith("-"):
+        return None
+    m = re.match(r"^([A-Za-z0-9_.\-]+)\s*(\[[^\]]*\])?\s*(.*)$", line)
+    if not m:
+        return None
+    name = m.group(1)
+    specs = [(op, ver) for op, ver in
+             re.findall(r"(==|>=|<=|~=|!=|>|<)\s*([0-9][\w.*+!-]*)", m.group(3) or "")]
+    return name, specs
+
+
+def _version_tuple(v: str) -> tuple:
+    """把版本串切成可比较的元组(只取前导数字段，宽容地忽略后缀)。"""
+    parts = []
+    for chunk in v.split("."):
+        m = re.match(r"\d+", chunk)
+        parts.append(int(m.group()) if m else 0)
+    return tuple(parts)
+
+
+def _spec_satisfied(installed: str, op: str, want: str) -> bool:
+    """判断已装版本 installed 是否满足约束 (op, want)。"""
+    a, b = _version_tuple(installed), _version_tuple(want)
+    if op == "==":
+        return installed == want or a == b
+    if op == "!=":
+        return not (installed == want or a == b)
+    if op == ">=":
+        return a >= b
+    if op == "<=":
+        return a <= b
+    if op == ">":
+        return a > b
+    if op == "<":
+        return a < b
+    if op == "~=":      # 兼容版本：>=want 且同一主段
+        return a >= b and a[:max(len(b) - 1, 1)] == b[:max(len(b) - 1, 1)]
+    return True
+
+
+def probe_packages() -> list[Finding]:
+    """📦 requirements.txt 里声明的第三方包能不能 import、版本符不符合约束。"""
+    import importlib.metadata as md
+
+    reqs = REPO_ROOT / "requirements.txt"
+    if not reqs.is_file():
+        return [_warn("requirements.txt", "缺失",
+                      "补一个 requirements.txt(本体零第三方就留空，也是一种声明)")]
+    parsed = [p for p in (_parse_requirement(ln)
+                          for ln in reqs.read_text("utf-8").splitlines()) if p]
+    if not parsed:
+        return [_ok("第三方依赖", "requirements.txt 为空(零第三方，符合设计)")]
+
+    out: list[Finding] = []
+    for name, specs in parsed:
+        try:
+            installed = md.version(name)
+        except md.PackageNotFoundError:
+            out.append(_err(f"依赖 {name}", "声明了却没装上",
+                            "pip install -r requirements.txt"))
+            continue
+        bad = [(op, ver) for op, ver in specs
+               if not _spec_satisfied(installed, op, ver)]
+        if bad:
+            want = ", ".join(f"{op}{ver}" for op, ver in bad)
+            out.append(_err(f"依赖 {name}", f"已装 {installed}，不满足 {want}",
+                            f"pip install '{name}{want}' 对齐到约定版本"))
+        else:
+            shown = "".join(f"{op}{ver}" for op, ver in specs)
+            out.append(_ok(f"依赖 {name}",
+                           f"已装 {installed}" + (f"（满足 {shown}）" if shown else "")))
+    return out
+
+
+# ── 配置一致性探测(原 envcheck，并入以消重叠：同一份 .env / requirements) ──
+def probe_env_example() -> list[Finding]:
+    """🗂️ 配置范本 .env.example 在不在(它是所有键的真相源)。"""
+    p = REPO_ROOT / ".env.example"
+    if p.is_file():
+        return [_ok(".env.example", f"{len(parse_env_file(p))} 个键的范本")]
+    return [_err(".env.example", "缺失：没有范本就无从校验配置一致性",
+                 "补回 .env.example，列出所有 OPENCRAB_* 键及其默认值")]
+
+
+def probe_env_parity() -> list[Finding]:
+    """🔑 .env 与 .env.example 的键是否对齐(缺键 / 孤儿键)。"""
+    env_path = REPO_ROOT / ".env"
+    example_path = REPO_ROOT / ".env.example"
+    if not example_path.is_file():
+        return []   # 范本都没有，交给 probe_env_example 报
+    if not env_path.is_file():
+        return [_warn(".env", "无 .env，按梦境模式运行(读不到配置则全走默认值)",
+                      "想接真大脑：cp .env.example .env 后填 OPENCRAB_API_KEY")]
+
+    expected = set(parse_env_file(example_path))
+    actual = set(parse_env_file(env_path))
+    out: list[Finding] = []
+    missing = sorted(expected - actual)
+    if missing:
+        out.append(_err(".env 缺键", f"{', '.join(missing)}",
+                        "参照 .env.example 把这些键补进 .env(没填会回落默认值，"
+                        "但显式写出能避免行为漂移)"))
+    orphans = sorted(actual - expected - PROBE_INTERNAL_ENV)
+    if orphans:
+        out.append(_warn(".env 孤儿键", f"{', '.join(orphans)}（.env.example 里没有）",
+                         "多半是拼错或过期配置：核对拼写，或从 .env 删掉；"
+                         "若是新增的正式配置，记得同步写进 .env.example"))
+    if not missing and not orphans:
+        out.append(_ok(".env 键对齐", f"{len(expected)} 个键与范本一致"))
+    return out
+
+
+def probe_env_values() -> list[Finding]:
+    """🔢 .env 里数值/枚举型配置填得能不能用(填错心跳一启动就崩)。"""
+    env_path = REPO_ROOT / ".env"
+    if not env_path.is_file():
+        return []
+    env = parse_env_file(env_path)
+    out: list[Finding] = []
+    for key, parser in NUMERIC_ENV.items():
+        raw = env.get(key, "")
+        if raw == "":
+            continue   # 未填 -> 走默认值，不算错
+        try:
+            parser(raw)
+        except (ValueError, TypeError):
+            kind = "整数" if parser is int else "数字"
+            out.append(_err(f"数值 {key}", f"{raw!r} 不是合法{kind}",
+                            f"把 {key} 改成合法{kind}(参考 .env.example 的默认值)"))
+    for key, allowed in ENUM_ENV.items():
+        raw = env.get(key, "")
+        if raw and raw not in allowed:
+            out.append(_err(f"取值 {key}", f"{raw!r} 不在可选范围",
+                            f"把 {key} 改成这几个之一：{'/'.join(sorted(allowed))}"))
+    if not any(f.level == ERROR for f in out):
+        out.append(_ok("数值与取值", "数字/枚举项均可解析、合法"))
+    return out
+
+
+def probe_api_key() -> list[Finding]:
+    """🧠 大脑钥匙 OPENCRAB_API_KEY 填没填(空=梦境模式，只提示不阻断)。"""
+    env = parse_env_file(REPO_ROOT / ".env")
+    if env.get("OPENCRAB_API_KEY", "").strip():
+        return [_ok("大脑钥匙", "OPENCRAB_API_KEY 已填")]
+    return [_warn("大脑钥匙", "OPENCRAB_API_KEY 为空 —— 梦境模式(不接真大脑)",
+                  "想接真大脑：在 .env 填上任意 OpenAI 兼容 key")]
+
+
+# 探测分两族：运行时够不够得着(runtime) / 配置对不对齐(env，原 envcheck)。
+RUNTIME_PROBES = [probe_python, probe_stdlib, probe_external_tools,
+                  probe_executor, probe_packages]
+ENV_PROBES = [probe_env_example, probe_env_parity, probe_env_values, probe_api_key]
+PROBES = RUNTIME_PROBES + ENV_PROBES
+
+
+def probe_run(probes: list | None = None) -> list[Finding]:
+    """跑完指定探测(默认全跑)，返回发现列表(探针自身出错也收敛成一条 error)。"""
+    findings: list[Finding] = []
+    for p in (PROBES if probes is None else probes):
+        try:
+            findings.extend(p())
+        except Exception as e:
+            findings.append(_err(p.__name__, f"探测异常：{e}",
+                                 "这是 probe 自己出的错，贴出来看看哪步炸了"))
+    return findings
+
+
+def probe_record_to_audit(findings: list[Finding] | None = None) -> dict:
+    """把探测结果写进结构化审计，返回写下的那条记录(写审计永不反噬)。"""
+    findings = probe_run() if findings is None else findings
+    healthy, errors, warns = summarize(findings)
+    try:
+        import audit
+        return audit.record("probe", healthy=healthy, errors=errors, warns=warns,
+                            failed=[f.label for f in findings if not f.passed])
+    except Exception:
+        return {}   # 审计是观测者，不能成为新的故障源
+
+
 import regression
 
 
