@@ -57,10 +57,11 @@ class Claim:
     asserts: str              # 一句话：这条声明断言我会做什么
     argv: list[str]           # 验证命令：退出码 0 即视作成立
     ttl_days: float           # 证据时效：超过这么多天没复验，就算过期
+    risk: float = 1.0         # 风险权重：这块能力悄悄腐烂的代价(越高越该优先巡到)
 
     def to_meta(self) -> dict:
         return {"name": self.name, "asserts": self.asserts,
-                "argv": self.argv, "ttl_days": self.ttl_days}
+                "argv": self.argv, "ttl_days": self.ttl_days, "risk": self.risk}
 
 
 # ── 能力声明清单：单一真相源 ──────────────────────────────────────────
@@ -92,6 +93,7 @@ CLAIMS: list[Claim] = [
         asserts="领地整体自检健康(各层验证全过)",
         argv=_PY + ["health.py", "--quiet"],
         ttl_days=3,
+        risk=2.0,
     ),
 ]
 
@@ -219,6 +221,81 @@ def summarize(statuses: list[Status]) -> tuple[bool, dict[str, int]]:
     return all_settled, counts
 
 
+# ── 巡逻：按过期度 × 风险抽样复验，失败自动开修复小单 ────────────────────
+# 全量复验越来越贵(声明只增不减)，而能力腐烂是渐进的——不必每次都全验。
+# 巡逻按「该不该现在重看」给每条声明打分，只复验最该看的前 N 条：
+#   · 未证(⚪) / 失守(🔴) —— 最该盯，给最高基线分；
+#   · 新鲜/过期 —— 按过期度(age/ttl，越超期分越高)算；
+#   · 再统一乘以各自的风险权重(risk)——腐烂代价高的，同等过期度下先巡。
+# 分数 ≤ 0(远未到期且不急)的不打扰，省得把生命耗在没必要的复跑上。
+def patrol_score(status: Status, claim: Claim) -> float:
+    """这条声明此刻「该不该重看」的紧迫度：未证/失守最高，其余按过期度，乘风险权重。"""
+    if status.state == "unproven":
+        base = 2.0           # 光有声明没证据，最该补一次
+    elif status.state == "broken":
+        base = 1.5           # 已知塌了，复验确认是否修回来/仍塌
+    else:
+        # 新鲜/过期：过期度 = 距上次验证的天数 ÷ 时效。=1 恰好到期，>1 已超期。
+        overdue = (status.age_days or 0.0) / claim.ttl_days if claim.ttl_days > 0 else 1.0
+        base = overdue - 0.5  # 留半个时效的余量：才验过没多久的，分数为负，不打扰
+    return base * claim.risk
+
+
+def select_patrol(statuses: list[Status], budget: int,
+                  claims: list[Claim] | None = None) -> list[Claim]:
+    """挑出本轮最该复验的前 budget 条声明(分数 > 0 才入选；按分数降序、同分按名字定序)。"""
+    by_name = {c.name: c for c in (CLAIMS if claims is None else claims)}
+    scored = []
+    for s in statuses:
+        c = by_name.get(s.name)
+        if c is None:
+            continue
+        score = patrol_score(s, c)
+        if score > 0:
+            scored.append((score, c))
+    scored.sort(key=lambda t: (-t[0], t[1].name))
+    return [c for _, c in scored[:max(0, budget)]]
+
+
+def file_fix_ticket(claim: Claim, rec: dict) -> bool:
+    """复验失守 → 往进件队列开一张修复小单(尽力而为，开不出也不反噬巡逻)。
+
+    小单文案对每条声明**稳定**(不含时间戳)，于是 intake 按内容去重——
+    持续失守只攒一张单，修回来后那张单自然不再被复开。
+    """
+    try:
+        import intake  # 延迟导入：巡逻不强依赖进件层在场
+        detail = (rec.get("detail") or "").splitlines()
+        first = detail[0][:160] if detail else ""
+        cmd = " ".join(claim.argv[1:]) or claim.argv[0]
+        text = (f"能力『{claim.name}』证据复验失守(回归失败)：{claim.asserts}。"
+                f"复验命令 `{cmd}` 退出码非零。验收线：该命令重新跑通(退出码 0)。"
+                + (f" 现场：{first}" if first else ""))
+        _, is_new = intake.capture(text, source=intake.SOURCE_JOURNAL, ref="evidence")
+        return is_new
+    except Exception:  # noqa: BLE001 —— 开单是副产物，进件层缺席/出错都不该拖垮巡逻
+        return False
+
+
+def patrol(budget: int = 2, *, claims: list[Claim] | None = None) -> dict:
+    """巡逻一轮：按过期度×风险抽样复验前 budget 条，失败自动开修复小单。
+
+    返回本轮纪要：复验了哪些、各自通过否、开出几张修复小单。全程尽力而为。
+    """
+    claims = CLAIMS if claims is None else claims
+    befores = status(claims)
+    picked = select_patrol(befores, budget, claims)
+    results, tickets = [], []
+    for c in picked:
+        rec = verify(c)
+        results.append(rec)
+        if not rec["ok"] and file_fix_ticket(c, rec):
+            tickets.append(c.name)
+    return {"budget": budget, "checked": [r["name"] for r in results],
+            "failed": [r["name"] for r in results if not r["ok"]],
+            "tickets": tickets, "results": results}
+
+
 # ── 展示 ──────────────────────────────────────────────────────────────
 def _fmt_age(s: Status) -> str:
     if s.age_days is None:
@@ -265,8 +342,23 @@ def main(argv: list[str] | None = None) -> None:
                     help="复跑验证命令并落账：不带名=全部，带名=只验该条")
     ap.add_argument("--quiet", action="store_true",
                     help="只在有过期/失守/未证时输出(适合钩子 / CI)")
+    ap.add_argument("--patrol", nargs="?", type=int, const=2, metavar="N",
+                    help="巡逻：按过期度×风险抽样复验最该看的前 N 条(默认 2)，失败自动开修复小单")
     ap.add_argument("--json", action="store_true", help="导出机读状态清单")
     args = ap.parse_args(argv)
+
+    if args.patrol is not None:
+        rep = patrol(args.patrol)
+        if not args.quiet:
+            checked = rep["checked"]
+            print(f"🧾 证据巡逻：抽样复验 {len(checked)} 条"
+                  f"（{'、'.join(checked) or '无到期声明'}）")
+            for r in rep["results"]:
+                print(f"  {'🟢' if r['ok'] else '🔴'} {r['name']}")
+            if rep["tickets"]:
+                print(f"  ✍️  已开 {len(rep['tickets'])} 张修复小单进进件队列："
+                      f"{'、'.join(rep['tickets'])}")
+            print()
 
     if args.json:
         print(json.dumps(manifest(), ensure_ascii=False, indent=2))
