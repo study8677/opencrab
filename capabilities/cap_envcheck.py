@@ -19,10 +19,10 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 def run(ctx: dict) -> Result:
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
-    import probe
+    import health as probe   # 原 envcheck/probe.py 均已并入 health.py
 
     strict = bool((ctx or {}).get("strict"))
-    findings = probe.run(probe.ENV_PROBES)   # 原 envcheck 已并入 probe.py --env
+    findings = probe.probe_run(probe.ENV_PROBES)   # 配置一致性那一族探测
     healthy, errors, warns = probe.summarize(findings, strict=strict)
 
     if healthy:
