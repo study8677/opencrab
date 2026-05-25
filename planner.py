@@ -350,12 +350,16 @@ def draft(goal: str) -> Plan:
 
 
 def _recall_warning(text: str, k: int = 2) -> str:
-    """软引入 memory：这类目标以前若栽过，返回一句预警；缺/错则返回空串。"""
+    """这类目标以前若栽过，返回一句预警；缺/错则返回空串。
+
+    收口到 policy 的单一记忆校准闸门（`policy.recall_seeds`）——「同类干法栽没栽过」
+    的判断全仓只此一处，planner 不再自己捞一遍 memory。policy 缺席就从容退化空串。
+    """
     try:
-        import memory
-        for s, ep in memory.recall(text, k=k):
-            if not ep.ok and s >= 0.5:
-                return f"记忆里同类目标栽过：{ep.headline()}"
+        import policy
+        seeds, burned = policy.recall_seeds(text, k=k)
+        if burned and seeds:
+            return "记忆里同类目标栽过：" + seeds[0].lstrip("⚠️ 上次栽过 —").strip()
     except Exception:
         pass
     return ""
