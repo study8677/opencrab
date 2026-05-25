@@ -222,15 +222,38 @@ def diff_snapshot(before: dict, after: dict) -> list[str]:
     return diffs
 
 
+# 🪞 诚实机制（底层）：宣称"精简/整合"这类词，就要接受客观事实的对账
+_SLIM_WORDS = ("瘦身", "精简", "收敛", "合并", "去重", "删", "减", "整合",
+               "重构", "consolidat", "merge", "slim", "dedup")
+
+
+def _honesty_audit(intent: str, before: dict, after: dict) -> tuple[bool, str]:
+    """🪞 用客观事实(行数/模块数的真实增减)检验意图的承诺，返回 (名实相符?, 判词)。
+    数字是文件系统的硬事实——它伪造不了。这是诚实的锚，不是又一个可刷的指标。"""
+    head = intent.split("\n")[0]
+    d_loc = after.get("loc", 0) - before.get("loc", 0)
+    d_py = after.get("py_files", 0) - before.get("py_files", 0)
+    if any(w in head for w in _SLIM_WORDS):
+        if d_loc <= 0 and d_py <= 0:
+            return True, f"✅ 名实相符：声称精简，实际 {d_loc:+d} 行 / {d_py:+d} 模块。"
+        return False, (f"⚠️ 名实不符（假瘦身）：嘴上『精简/整合』，实际却 {d_loc:+d} 行 / "
+                       f"{d_py:+d} 模块——多半是加了聚合层却没删旧的。真精简必须让数字"
+                       "净降，否则只是给自欺换了张脸。下次要么真删旧的，要么别号称在精简。")
+    return True, ""
+
+
 def record_evolution(intent: str, before: dict, after: dict,
                      proposal: dict | None) -> list[str]:
     """📈 把这次心跳的「快照差异」追加进演化日志，返回可读的变更摘要。
-    主干指标没变(如 branch 模式改动只在分支)时，退回看爪子的 diffstat。"""
+    主干指标没变(如 branch 模式改动只在分支)时，退回看爪子的 diffstat。
+    🪞 并做一次「诚实对账」：客观事实 vs 意图承诺，名实不符就刻进记忆。"""
     diffs = diff_snapshot(before, after)
     if not diffs and proposal and proposal.get("diffstat"):
         diffs = ["（改动留在分支，未并入主干）",
                  *("  " + ln for ln in proposal["diffstat"].splitlines())]
     summary = diffs or ["（这次心跳没有改变领地的关键指标）"]
+
+    honest, verdict = _honesty_audit(intent, before, after)  # 🪞 照镜子
 
     JOURNAL_DIR.mkdir(exist_ok=True)
     head = "# 🦀 演化日志\n\n> 每次心跳前后给自己拍快照，量出到底变强了什么。\n"
@@ -238,7 +261,18 @@ def record_evolution(intent: str, before: dict, after: dict,
     intent_line = intent.split("\n")[0][:60]
     block = [f"\n## {after['at']} · {after['head']}", f"- 意图：{intent_line}",
              "- 变化：", *(f"  - {d}" for d in summary)]
+    if verdict:
+        block.append(f"- 🪞 诚实对账：{verdict}")
     EVOLUTION_LOG.write_text(old.rstrip() + "\n" + "\n".join(block) + "\n", "utf-8")
+
+    if verdict:
+        log(f"🪞 {verdict}")
+    if not honest:        # 名实不符 → 刻进情境记忆，下次决策前 _recall_lessons 必照见
+        try:
+            import memory
+            memory.remember(situation=intent_line, action="自我进化", result=verdict)
+        except Exception:
+            pass
     return summary
 
 
