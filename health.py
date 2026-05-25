@@ -388,7 +388,7 @@ def _run_envcheck(strict: bool) -> Layer:
 
 
 def _run_checkup(strict: bool) -> Layer:
-    healthy, results = checkup.run()
+    healthy, results = self_check_run()
     failed = [label for ok, label, _ in results if not ok]
     summary = (f"{len(results)} 项全部通过" if healthy
                else f"{len(failed)} 处未过")
