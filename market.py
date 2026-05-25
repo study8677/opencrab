@@ -349,8 +349,8 @@ def seed_missionboard(market: Market, limit: int = 3) -> list[str]:
     """
     pushed: list[str] = []
     try:
-        import missionboard
-        board = missionboard.load()
+        import planner
+        board = planner.load_board()
     except Exception:
         return pushed
     for s in market.ranked()[:max(1, limit)]:
@@ -365,7 +365,7 @@ def seed_missionboard(market: Market, limit: int = 3) -> list[str]:
         except Exception:
             continue
     try:
-        missionboard.save(board)
+        planner.save_board(board)
     except Exception:
         pass
     return pushed
