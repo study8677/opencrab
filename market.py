@@ -10,7 +10,8 @@ planner 起路线）——可这些井口全朝**内**：候选从 memory / ment
 
 需求信号市场补的正是这层**外部校准**：把外界零散的声音收成可比价的「行情」——
 
-  - 📥 多口外部井，各自从容退化：issue / PR（软调 `gh` CLI，没装/没登录就跳过）、
+  - 📥 多口外部井，各自从容退化：issue / PR（经瞭望塔 lookout 这只唯一的眼收口调 `gh`，
+    没装/没登录就跳过）、
     最近提交讨论（git log 正文）、README（写明的使命与承诺）。任一口井缺席都不报错，
     市场照样从拿得到的声音里出价。
   - 🧮 把零散声音聚成「信号」：相近的诉求归成同一条主题（软调 memory.similarity 做
@@ -192,14 +193,14 @@ def _run(cmd: list[str], timeout: int = 20) -> str:
 
 # ── 外部井：各自从容退化，缺一口不影响其余 ──────────────────────────
 def _harvest_github(kind: str, limit: int = 40) -> list[Voice]:
-    """软调 `gh` CLI 读 issue / PR；没装 gh、没登录、不是 GitHub 仓都从容返回空。"""
-    fields = "number,title,body,createdAt"
-    out = _run(["gh", kind, "list", "--state", "all", "--limit", str(limit),
-                "--json", fields])
-    if not out:
-        return []
+    """读 issue / PR 的外部声音——收口到瞭望塔(lookout)这只唯一的「眼睛」。
+
+    所有对 `gh` 的调用都归 lookout.harvest 一处闸门：没装 gh、没登录、不是
+    GitHub 仓、lookout 缺席都从容返回空，绝不在市场里再各 shell 一遍 gh。
+    """
     try:
-        rows = json.loads(out)
+        import lookout
+        rows = lookout.harvest(kind, limit=limit)
     except Exception:
         return []
     src = "issue" if kind == "issue" else "pr"
