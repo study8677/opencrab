@@ -31,8 +31,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime
-import json
 import pathlib
+
+import jsonlstore
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent
 _COACH_DIR = _REPO_ROOT / "state" / "coach"        # 落在被 .gitignore 的 state/ 里
@@ -280,16 +281,11 @@ def grade(rnd: Round, passed: set[str] | list[str]) -> Scorecard:
 # ── 落地 / 回看 ─────────────────────────────────────────────────────
 def record(rnd: Round, *, scorecard: Scorecard | None = None) -> Round:
     """把训练回合(可带自评成绩)落进 state/coach/rounds.jsonl；写入异常一律吞掉。"""
-    try:
-        _COACH_DIR.mkdir(parents=True, exist_ok=True)
-        row = rnd.to_dict()
-        if scorecard is not None:
-            row["score"] = {"earned": scorecard.earned, "total": scorecard.total,
-                            "cleared": scorecard.cleared}
-        with _ROUNDS.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    except Exception:
-        pass   # 教练是陪练者，落档失败也绝不弄死这只生命
+    row = rnd.to_dict()
+    if scorecard is not None:
+        row["score"] = {"earned": scorecard.earned, "total": scorecard.total,
+                        "cleared": scorecard.cleared}
+    jsonlstore.append_jsonl(_ROUNDS, row)   # 教练是陪练者，落档失败被吞，绝不弄死这只生命
     return rnd
 
 
