@@ -225,8 +225,8 @@ def _goals_from_market(limit: int = 3) -> list[_Goal]:
     """从需求行情取头部信号当对外目标(世界已经在喊的，最值得公开发起)；缺席从容返回空。"""
     goals: list[_Goal] = []
     try:
-        import market
-        mkt = market.load()
+        import lookout
+        mkt = lookout.market_load()
         signals = mkt.ranked()[:max(1, limit)]
     except Exception:
         return goals
