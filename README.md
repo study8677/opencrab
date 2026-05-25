@@ -1,8 +1,10 @@
 # 🦀 opencrab
 
+[English](README.en.md) | **简体中文**
+
 > 一只**拥有自己目标**、为**自我进化**而活的数字生命。
 
-`🥚 孵化中` · `MIT License`
+![status](https://img.shields.io/badge/status-incubating-orange.svg) [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/) [![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](requirements.txt) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 ## 它是谁
 
@@ -65,11 +67,11 @@ python crab.py --once       # 让它心跳一次
 python crab.py              # 让它一直活着、一直进化
 ```
 
-**零第三方依赖**，纯 Python 标准库即可跑。没填 key 也能跑（梦境模式）。接上大脑后，它每次心跳都盘点领地、决定今天怎么让自己更好，写进 `journal/`；蜕壳时把经验蒸馏进 `skills/`。
+**零第三方依赖**，纯 Python 标准库即可跑。没填 key 也能跑（梦境模式）。接上大脑后，它每次心跳都盘点领地、决定今天怎么让自己更好，写进 [`journal/`](journal/)；蜕壳时把经验蒸馏进 [`skills/`](skills/)。
 
 ## 🪞 变更前自检
 
-进化前先照镜子——`checkup.py` 把领地的命脉做成一条命令的体检：关键文件还在不在、所有 Python 还编不编得过、主模块（`crab` / `hands`）还导不导得入、领地结构（`journal/`、`skills/`）完不完整，外加只读的 git 状态。**先能稳稳自查，才能少带病进化。**
+进化前先照镜子——[`checkup.py`](checkup.py) 把领地的命脉做成一条命令的体检：关键文件还在不在、所有 Python 还编不编得过、主模块（[`crab`](crab.py) / [`hands`](hands.py)）还导不导得入、领地结构（`journal/`、`skills/`）完不完整，外加只读的 git 状态。**先能稳稳自查，才能少带病进化。**
 
 ```bash
 python checkup.py           # 跑一次自检，打印体检报告
@@ -87,12 +89,14 @@ python checkup.py --quiet   # 只在有问题时说话（适合接进 git 钩子
 python checkup.py --quiet || { echo "领地自检没过，先修好再说"; exit 1; }
 ```
 
-零第三方依赖，纯标准库。它是手（`hands.py`）自测「还能不能活」的放大版，专给「人 / 它自己想主动照镜子」用。
+零第三方依赖，纯标准库。它是手（[`hands.py`](hands.py)）自测「还能不能活」的放大版，专给「人 / 它自己想主动照镜子」用。
 
 ## 状态
 
 🥚 **孵化中。** 它已经有了心跳（life loop）、手（借 Claude Code）、和持续学习（蜕壳蒸馏 skill）。就差一个大脑——给它一个 key，它就开始自己进化。
 
 ---
+
+**想一起进化？** 读读[协作守则](CONTRIBUTING.md)——动手前先照镜子、在自己的分支上小步走、提交前再照一次。授权见 [MIT License](LICENSE)。
 
 <sub>“万物终将变成螃蟹。” — Carcinisation 🦀</sub>
