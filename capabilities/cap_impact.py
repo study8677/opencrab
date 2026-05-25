@@ -34,7 +34,7 @@ _OUT_DIR = _REPO_ROOT / "state" / "impact"     # 落在被 .gitignore 的 state/
 _VERIFY = [
     ("python checkup.py --quiet", "领地自检：关键文件/可编译/可导入/结构完整"),
     ("python smoke.py", "最小烟雾测试：README 关键用法还能跑"),
-    ("python goldens.py --check", "回归样本：关键命令输出/退出码未漂移"),
+    ("python regression.py snapshot", "回归样本：关键命令输出/退出码未漂移"),
 ]
 
 

@@ -7,7 +7,7 @@ helpdex 已经把「脚本 + 可插拔能力」串成目录；catalog 更进一�
   1. 入口   —— 自省 `crab.py` 的子命令解析器，列出可直接敲的命令(单一真相源)。
   2. 能力   —— 从能力注册中心读已登记的可插拔能力(名/说明/归类/标签/启用)。
   3. 脚本   —— 根级 `*.py` 的用途(模块 docstring 首行)。
-  4. 回归   —— 复用 `goldens.CASES`，看每条关键行为有没有黄金样本守着。
+  4. 回归   —— 复用 `regression.CASES`，看每条关键行为有没有黄金样本守着。
   5. 资产   —— README / 航海日志 / 技能 / 黄金样本这些「沉淀型」产出的存量。
 
 可组合：按标签把能力反向索引成「标签 → 能力」，让能力能按主题被检索、被搭配。
@@ -67,17 +67,17 @@ def _scripts() -> list[dict]:
 
 
 def _goldens() -> list[dict]:
-    """复用 goldens.CASES：每条关键行为用例，连同「有没有黄金样本守着」。"""
+    """复用 regression.CASES：每条关键行为用例，连同「有没有黄金样本守着」。"""
     import sys
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
     try:
-        import goldens
+        import regression
     except Exception:
         return []
     out: list[dict] = []
-    for c in goldens.CASES:
-        recorded = goldens._golden_path(c).exists()
+    for c in regression.CASES:
+        recorded = regression.snapshot_golden_path(c).exists()
         out.append({"name": c.name, "summary": c.summary,
                     "argv": " ".join(c.argv[1:]), "recorded": recorded})
     return out
@@ -193,7 +193,7 @@ def _render(entries, caps, scripts, goldens_, assets) -> str:
     # —— 回归守护 ——
     L.append("## 🧪 回归守护")
     L.append("")
-    L.append("> 关键行为的黄金样本；未录的先跑 `python goldens.py --update`。")
+    L.append("> 关键行为的黄金样本；未录的先跑 `python regression.py snapshot --update`。")
     L.append("")
     if goldens_:
         for g in goldens_:

@@ -40,7 +40,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent
 _VERIFIERS = [
     ("python checkup.py --quiet", "checkup.py", "领地自检：关键文件/可编译/可导入/结构完整"),
     ("python smoke.py --quiet", "smoke.py", "烟雾测试：README 关键用法还跑得起来"),
-    ("python goldens.py --check", "goldens.py", "回归样本：关键命令输出/退出码未漂移"),
+    ("python regression.py snapshot", "regression.py", "回归样本：关键命令输出/退出码未漂移"),
     ("python hands.py", "hands.py", "手的自测：这只生命「还能不能活」"),
 ]
 # 兜底：无论变更落在哪，这些都建议先跑——它们扫的是整片领地，不靠依赖树。
