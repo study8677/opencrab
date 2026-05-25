@@ -387,7 +387,7 @@ def _gather_evidence(goal: str) -> list[Evidence]:
 
 # ── 给一份方案过沙盘 + 据证据加减 ───────────────────────────────────
 def weigh(p: Proposal, *, goal: str = "", constraints: list | None = None) -> Proposal:
-    """先过沙盘(simulator.appraise，缺席则本地兜底)算收益/风险/成本，
+    """先过沙盘(本模块自带的 appraise)算收益/风险/成本，
     再据这一派**引用了哪些证据**给预期收益加减——就地改写 p 并返回。"""
     constraints = constraints or []
     warn = next((e.text for e in p.cites if e.kind == "failure"), "")

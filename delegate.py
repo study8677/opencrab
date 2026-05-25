@@ -21,7 +21,7 @@
     各段拼成一个谁都没把关的冒进方案。
 
 它只把活拆开、把料拼拢、排出次序，**不动手写码、更不替 judge 拍板**；可一键把汇总出的
-最终方案交给 planner 落成多步计划。软引入 memory / mentor / simulator / planner：哪个
+最终方案交给 planner 落成多步计划。软引入 memory / mentor / arena / planner：哪个
 上游缺席都从容退化（证据井打不上水就空着，沙盘没装就用本地兜底，planner 没接上就只出
 方案不落计划），绝不因某个依赖缺位而崩。每次派遣落进被 .gitignore 的 state/delegate/，
 可回溯但绝不反噬：读写出错统统吞掉，派遣台不能成为新的故障源。
@@ -47,7 +47,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent
 _DELEGATE_DIR = _REPO_ROOT / "state" / "delegate"   # 落在被 .gitignore 的 state/ 里
 _RUNS = _DELEGATE_DIR / "runs.jsonl"                 # 每次派遣的快照(可回看)
 
-# 领地的要害器官：分身要碰它们，风险天然更重。软对齐 judge/simulator/arena 的同名清单，
+# 领地的要害器官：分身要碰它们，风险天然更重。软对齐 judge/arena 的同名清单，
 # 拿不到就用本地兜底，绝不因 import 失败而崩。
 try:
     from judge import _VITAL as _VITAL              # type: ignore
@@ -55,7 +55,7 @@ except Exception:                                   # pragma: no cover
     _VITAL = {"crab.py", "hands.py", "checkup.py", "audit.py",
               "capabilities/__init__.py"}
 
-_BIG_LINES = 400        # 「巨改」阈值(与 simulator/arena 对齐)
+_BIG_LINES = 400        # 「巨改」阈值(与 arena 对齐)
 _WIDE_FILES = 12        # 改动面「失控」阈值
 
 
@@ -225,15 +225,15 @@ def _draft(st: Subtask, pool: list[Evidence], *, goal: str) -> Finding:
 
 
 def _verify(f: Finding, *, goal: str, constraints: list) -> None:
-    """这只分身自验它那段的风险：优先借 simulator 沙盘脑子，装不上就本地兜底。"""
+    """这只分身自验它那段的风险：优先借 arena 沙盘脑子，装不上就本地兜底。"""
     try:
-        import simulator
-        sb = simulator.Sandbox(
+        import arena
+        sb = arena.Sandbox(
             name=f.title, approach=f.approach,
             new_modules=1 if f.role == "maker" else 0,
             est_lines=f.est_lines, touches=list(f.touches),
             has_selftest=f.wants_selftest, reversible=f.reversible)
-        simulator.appraise(sb, goal=goal, constraints=constraints)
+        arena.appraise(sb, goal=goal, constraints=constraints)
         f.risk = sb.risk
         f.risk_notes = list(sb.failure_chain)
         return
@@ -243,7 +243,7 @@ def _verify(f: Finding, *, goal: str, constraints: list) -> None:
 
 
 def _verify_local(f: Finding) -> None:
-    """沙盘缺席时的本地兜底自验（与 simulator 口径大体对齐，保守取重）。"""
+    """沙盘缺席时的本地兜底自验（与 arena 口径大体对齐，保守取重）。"""
     vital = f.touches_vital()
     risk = (2 if vital else 0) + (0 if f.wants_selftest else 2) \
         + (0 if f.reversible else 1) + (1 if f.est_lines >= _BIG_LINES else 0)
