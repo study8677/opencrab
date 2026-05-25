@@ -198,8 +198,8 @@ def _from_mentor(signals: dict) -> list[Candidate]:
     """招式井：学了却没练的高迁移招式卡——把「看见」变「学会」，欠的债该还。"""
     out: list[Candidate] = []
     try:
-        import mentor
-        cards = mentor.recent(30)
+        import lookout
+        cards = lookout.recent(30)
     except Exception:
         return out
     signals["mentor_total"] = len(cards)

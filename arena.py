@@ -375,8 +375,8 @@ def _gather_evidence(goal: str) -> list[Evidence]:
     except Exception:
         pass
     try:
-        import mentor
-        for c in mentor.recent(20):
+        import lookout
+        for c in lookout.recent(20):
             if int(c.get("transfer", 0)) >= 4:
                 title = str(c.get("title", "")).split("（来自")[0].strip()[:36]
                 pool.append(Evidence("move", f"招式：有现成高迁移招式可借 — {title}", 0.6))
