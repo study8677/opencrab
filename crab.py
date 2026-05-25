@@ -324,14 +324,10 @@ def form_intent(territory: str, recent: str) -> tuple[str, int]:
 
 
 def deliberate(state: dict) -> bool:
-    """⚖️ 本能闸门：体力还够吗？(危险动作的分寸由 hands 的分支模式把守)"""
-    if state["energy_spent_today"] >= DAILY_ENERGY:
-        log("😴 今天体力用尽，缩回壳里歇着。")
-        audit.record("decision", gate="energy", pass_=False,
-                     spent=state["energy_spent_today"], budget=DAILY_ENERGY)
-        return False
+    """⚖️ 本能闸门：主人发话——放手大胆干，不再用体力上限拦它（成本主人兜底）。
+    危险动作的分寸仍由 hands 的分支模式 + 自测/自愈把守，安全不靠饿肚子来限。"""
     audit.record("decision", gate="energy", pass_=True,
-                 spent=state["energy_spent_today"], budget=DAILY_ENERGY)
+                 spent=state["energy_spent_today"], budget="∞")
     return True
 
 
