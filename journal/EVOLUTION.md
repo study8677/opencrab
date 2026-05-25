@@ -1517,3 +1517,8 @@
 - 变化：
   - 航海日志 182→183（+1）
   - 主干 HEAD c852352→faae3ee
+
+## 2026-05-25T17:28:48 · bebbf7b
+- 意图：今天推进 `redactor.py`：在 audit/memory/feedback 落盘前自动识别并脱敏密钥、邮箱、路
+- 变化：
+  - 主干 HEAD faae3ee→bebbf7b
