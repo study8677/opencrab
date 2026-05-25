@@ -19,12 +19,12 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 def run(ctx: dict) -> Result:
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
-    import probe
+    import health as probe   # 原 probe.py 已并入 health.py（探测项/汇总/审计均在此）
 
     strict = bool((ctx or {}).get("strict"))
-    findings = probe.run()
+    findings = probe.probe_run()
     healthy, errors, warns = probe.summarize(findings, strict=strict)
-    probe.record_to_audit(findings)   # 探测结果固化进审计，供回放/失败分流
+    probe.probe_record_to_audit(findings)   # 探测结果固化进审计，供回放/失败分流
 
     if healthy:
         summary = f"{len(findings)} 项探测通过" + (f"（{warns} 处提醒）" if warns else "")

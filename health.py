@@ -2,8 +2,8 @@
 """统一健康验证入口 🩺🪞🔥 —— 一条命令把启动前的体检全跑一遍。
 
 opencrab 的健康验证一度散在多处，各看一层、各有各的报告格式：
-  · `probe.py`    依赖与外部工具够不够得着 + 配置一致不一致(解释器/标准库/
-    git/执行器/第三方包；.env 缺键/孤儿键/数值/版本) —— 原 envcheck 已并入此处；
+  · probe 层       依赖与外部工具够不够得着 + 配置一致不一致(解释器/标准库/
+    git/执行器/第三方包；.env 缺键/孤儿键/数值/版本) —— 原 probe.py/envcheck 均已并入此处；
   · `checkup.py`  整只螃蟹健不健康(文件/语法/导入/结构/仓库完整性)；
   · `smoke.py`    README 教的命令今天还真跑不跑得起来。
 
@@ -654,8 +654,8 @@ class Layer:
 
 
 def _run_probe(strict: bool) -> Layer:
-    findings = probe.run(probe.RUNTIME_PROBES)
-    healthy, errors, warns = probe.summarize(findings, strict=strict)
+    findings = probe_run(RUNTIME_PROBES)
+    healthy, errors, warns = summarize(findings, strict=strict)
     summary = (f"{len(findings)} 项探测通过" + (f"（{warns} 处提醒）" if warns else "")
                if healthy else f"{errors} 处缺失")
     detail = "\n".join(_finding_line(f) for f in findings)
@@ -663,8 +663,8 @@ def _run_probe(strict: bool) -> Layer:
 
 
 def _run_envcheck(strict: bool) -> Layer:
-    findings = probe.run(probe.ENV_PROBES)
-    healthy, errors, warns = probe.summarize(findings, strict=strict)
+    findings = probe_run(ENV_PROBES)
+    healthy, errors, warns = summarize(findings, strict=strict)
     summary = (f"{len(findings)} 项校验通过" + (f"（{warns} 处提醒）" if warns else "")
                if healthy else f"{errors} 处不一致")
     detail = "\n".join(_finding_line(f) for f in findings)
@@ -693,7 +693,7 @@ def _run_smoke(strict: bool) -> Layer:
 
 def _finding_line(f) -> str:
     """把 probe/envcheck 的 Finding 渲染成一行(含修复建议)。"""
-    line = f"  {probe._MARK[f.level]} {f.label}" + (f" — {f.detail}" if f.detail else "")
+    line = f"  {_MARK[f.level]} {f.label}" + (f" — {f.detail}" if f.detail else "")
     if f.fix:
         line += f"\n        ↳ 修复：{f.fix}"
     return line
