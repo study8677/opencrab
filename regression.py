@@ -589,12 +589,13 @@ def _run_path() -> Layer:
     return Layer("path", "🛤️ 黄金路径 · 端到端必经链", ok, summary, "\n".join(lines))
 
 
-# 由细到粗的顺序：先比单命令快照，再跑端到端生命线。
+# 由细到粗的顺序：先比单命令快照，再跑端到端生命线，最后看 README 的命令真能跑。
 LAYERS = {
     "snapshot": _run_snapshot,
     "path": _run_path,
+    "smoke": _run_smoke,
 }
-ORDER = ["snapshot", "path"]
+ORDER = ["snapshot", "path", "smoke"]
 
 
 def run(keys: list[str] | None = None) -> list[Layer]:

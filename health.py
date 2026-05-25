@@ -356,7 +356,7 @@ def self_check_run() -> tuple[bool, list[tuple[bool, str, str]]]:
 
 
 import probe
-import smoke
+import regression
 
 
 @dataclasses.dataclass
@@ -398,7 +398,7 @@ def _run_checkup(strict: bool) -> Layer:
 
 
 def _run_smoke(strict: bool) -> Layer:
-    report = smoke.verify()
+    report = regression.verify_smoke()
     failed = [o for o in report.outcomes if not o.ok]
     summary = (f"{len(report.outcomes)} 条示例都真能跑" if report.ok
                else f"{len(failed)} 条失败")
