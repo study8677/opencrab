@@ -1,4 +1,4 @@
-"""能力 · 回归快照 🧪 —— 复用 goldens.py，比对关键命令的行为有没有悄悄退化。"""
+"""能力 · 回归快照 🧪 —— 复用 regression.py，比对关键命令的行为有没有悄悄退化。"""
 from __future__ import annotations
 
 import pathlib
@@ -14,9 +14,9 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 def run(ctx: dict) -> Result:
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
-    import goldens
+    import regression
 
-    v = goldens.verify()
+    v = regression.verify_snapshot()
     if v.ok:
         summary = f"{len(v.passed)}/{v.total} 条用例无回归"
     else:

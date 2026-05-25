@@ -542,12 +542,12 @@ class Layer:
 
 
 def _run_snapshot() -> Layer:
-    v = goldens.verify()
+    v = verify_snapshot()
     lines: list[str] = []
     for name in v.passed:
         lines.append(f"  ✅ {name}")
     for name in v.missing:
-        lines.append(f"  ⚪ {name} — 还没有黄金样本(先跑 python goldens.py --update)")
+        lines.append(f"  ⚪ {name} — 还没有黄金样本(先跑 python regression.py snapshot --update)")
     for name in v.regressed:
         lines.append(f"  ❌ {name} — 行为变了：")
         lines += ["       " + line for line in v.diffs[name]]
@@ -613,7 +613,7 @@ def run(keys: list[str] | None = None) -> list[Layer]:
 def _update(keys: list[str]) -> None:
     """确认当前行为正确后，(重新)录制选定层的黄金样本。"""
     if "snapshot" in keys:
-        touched = goldens.update()
+        touched = update_snapshot()
         print(f"🧪 已录制 {len(touched)} 条回归快照：{', '.join(touched)}")
     if "path" in keys:
         fp = update_path()
