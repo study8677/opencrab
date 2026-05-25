@@ -50,11 +50,35 @@ _ROUNDS = _ARENA_DIR / "rounds.jsonl"               # 每场比赛的快照(可�
 # 要害清单与巨改/失控阈值一律以沙盘为单一来源，竞技场不再各留一份；沙盘缺席才本地兜底，
 # 绝不因 import 失败而崩。
 try:
-    from simulator import _VITAL, _BIG_LINES, _WIDE_FILES   # type: ignore
+    from simulator import (_VITAL, _BIG_LINES, _WIDE_FILES,   # type: ignore
+                           append_snapshot as _append_snapshot,
+                           read_snapshots as _read_snapshots)
 except Exception:                                   # pragma: no cover
     _VITAL = {"crab.py", "hands.py", "checkup.py", "audit.py",
               "capabilities/__init__.py"}
     _BIG_LINES, _WIDE_FILES = 400, 12
+
+    # 沙盘缺席的本地兜底：自带一套等价的 jsonl 落地/回看，绝不因 import 失败而崩。
+    def _append_snapshot(path: pathlib.Path, payload: dict) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _read_snapshots(path: pathlib.Path, limit: int = 10) -> list:
+        if not path.exists():
+            return []
+        out: list = []
+        for line in path.read_text("utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+        return out[-limit:] if limit else out
 
 _EVIDENCE_CAP = 2       # 单份方案证据加减分的封顶，免得证据压过沙盘本身的净收益
 _CLOSE_MARGIN = 1       # 冠亚军预期收益差 ≤ 此值即判「势均力敌」
@@ -377,12 +401,7 @@ def compete(goal: str, strategies: list | None = None,
 def save(match: Match) -> Match:
     """把一场比赛追加一份快照到 state/arena/rounds.jsonl；写入异常一律吞掉，绝不反噬。"""
     match.at = datetime.datetime.now().isoformat(timespec="seconds")
-    try:
-        _ARENA_DIR.mkdir(parents=True, exist_ok=True)
-        with _ROUNDS.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(match.to_dict(), ensure_ascii=False) + "\n")
-    except Exception:
-        pass        # 竞技场是参谋，落档失败也绝不弄死这只生命
+    _append_snapshot(_ROUNDS, match.to_dict())      # 与沙盘同用一套落地逻辑
     return match
 
 
@@ -394,18 +413,7 @@ def arena(goal: str, strategies: list | None = None,
 
 def recent(limit: int = 10) -> list[dict]:
     """读出最近落档的比赛快照(时间正序)；文件缺失或坏行都从容跳过。"""
-    if not _ROUNDS.exists():
-        return []
-    out: list[dict] = []
-    for line in _ROUNDS.read_text("utf-8", errors="ignore").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except Exception:
-            continue
-    return out[-limit:] if limit else out
+    return _read_snapshots(_ROUNDS, limit)
 
 
 def kickoff(goal: str, strategies: list | None = None,

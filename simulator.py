@@ -307,24 +307,26 @@ def simulate(goal: str, sandboxes: list | None = None,
     return save(sim)
 
 
-def save(sim: Simulation) -> Simulation:
-    """把推演追加一份快照到 state/simulator/runs.jsonl；写入异常一律吞掉，绝不反噬。"""
-    sim.at = datetime.datetime.now().isoformat(timespec="seconds")
+# ── 共享的快照落地/回看（沙盘与竞技场同用一套，绝不各写一份） ───────
+# 演化试验场是一条链：沙盘(simulator)是评估「脑子」，竞技场(arena)在其上做多方案竞争。
+# 两者的「追加一份 jsonl 快照 / 读回最近 N 条」逻辑曾各写一份、字字雷同；现收敛到此处
+# 由沙盘单一提供，arena 直接复用——读写出错统统吞掉，参谋落档失败绝不弄死这只生命。
+def append_snapshot(path: pathlib.Path, payload: dict) -> None:
+    """把一份快照追加到 path（自动建父目录）；写入异常一律吞掉，绝不反噬。"""
     try:
-        _SIM_DIR.mkdir(parents=True, exist_ok=True)
-        with _RUNS.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(sim.to_dict(), ensure_ascii=False) + "\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except Exception:
-        pass        # 推演官是参谋，落档失败也绝不弄死这只生命
-    return sim
+        pass
 
 
-def recent(limit: int = 10) -> list:
-    """读出最近落档的推演快照(时间正序)；文件缺失或坏行都从容跳过。"""
-    if not _RUNS.exists():
+def read_snapshots(path: pathlib.Path, limit: int = 10) -> list:
+    """读出 path 里最近 limit 条快照(时间正序)；文件缺失或坏行都从容跳过。"""
+    if not path.exists():
         return []
     out: list = []
-    for line in _RUNS.read_text("utf-8", errors="ignore").splitlines():
+    for line in path.read_text("utf-8", errors="ignore").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -333,6 +335,18 @@ def recent(limit: int = 10) -> list:
         except Exception:
             continue
     return out[-limit:] if limit else out
+
+
+def save(sim: Simulation) -> Simulation:
+    """把推演追加一份快照到 state/simulator/runs.jsonl；写入异常一律吞掉，绝不反噬。"""
+    sim.at = datetime.datetime.now().isoformat(timespec="seconds")
+    append_snapshot(_RUNS, sim.to_dict())
+    return sim
+
+
+def recent(limit: int = 10) -> list:
+    """读出最近落档的推演快照(时间正序)；文件缺失或坏行都从容跳过。"""
+    return read_snapshots(_RUNS, limit)
 
 
 # ── CLI ─────────────────────────────────────────────────────────────
