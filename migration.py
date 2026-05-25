@@ -76,6 +76,10 @@ class Schema:
     """
     name: str                      # 逻辑账本名(给人看 / 给 SCHEMAS 当键)
     steps: tuple[Step, ...] = ()   # vN→vN+1 的迁移函数,按版本顺序排
+    fields: frozenset[str] = frozenset()
+    # ↑ 当前版每条记录**应有**的字段名——这就是账本的「schema 快照」:把今天的形状钉成
+    #   契约。空集 = 尚未声明形状(对它跳过字段验收,只查版本)。声明了它,兼容性验收才
+    #   能从「版本号对不对」深入到「字段齐不齐」:旧行缺了某个今天该有的字段,会被当场点名。
 
     @property
     def current(self) -> int:
@@ -95,6 +99,8 @@ class Schema:
 #     "calibration": Schema("calibration", steps=(
 #         lambda r: {**r, "gain": 0.0},   # v1→v2:补默认 gain 字段
 #     )),
+# `fields` 是该账本当前版的「schema 快照」:今天每条记录都该有的字段。只给**形状已稳定、
+# 我确有把握**的账本声明——拿不准的宁可留空(undeclared),也不凭猜测立一份错契约去误伤好行。
 SCHEMAS: dict[str, Schema] = {
     "calibration": Schema("calibration"),
     "uncertainty": Schema("uncertainty"),
@@ -103,8 +109,10 @@ SCHEMAS: dict[str, Schema] = {
     "intake": Schema("intake"),
     "intake_inbox": Schema("intake_inbox"),
     "evidence": Schema("evidence"),       # state/evidence/ledger.jsonl
-    "episodes": Schema("episodes"),       # state/memory/episodes.jsonl
-    "audit": Schema("audit"),             # state/audit/*.jsonl(按日分文件)
+    "episodes": Schema("episodes", fields=frozenset(
+        {"at", "situation", "action", "result", "ok", "code", "tags"})),  # state/memory/episodes.jsonl
+    "audit": Schema("audit", fields=frozenset(
+        {"ts", "run_id", "seq", "event", "tick"})),  # state/audit/*.jsonl(按日分文件)
 }
 
 # 没登记过的账本一律给一个 current=1 的默认契约:兼容性照样能查,只是没有可走的梯子。
@@ -168,6 +176,36 @@ def migrate_record(rec: dict, schema: Schema) -> tuple[dict, int]:
     return _climb(rec, schema)
 
 
+# ── 字段验收:把记录抬到当前版后,核对它的形状对不对得上 schema 快照 ──────────────
+def field_audit(records: list[dict], schema: Schema) -> tuple[Counter[str], Counter[str], int]:
+    """核对每条记录(先抬到当前版)的字段是否吻合 schema 快照,返回:
+
+      · missing:声明里有、记录却缺的字段 → 计数(字段名 → 缺它的行数)。这是**腐烂**的信号:
+        今天的代码默认每行都有这字段,可历史行没有,新代码去读就会缺字段崩或读出 None。
+      · extra:记录里有、快照却没声明的字段 → 计数。这是**漂移**:多半是某次加字段没同步快照,
+        宽容计入(加字段是向后兼容的),但点出来好让人决定要不要把它收进快照。
+      · checked:实际参与验收的行数(未来行形状未知,跳过不验)。
+
+    schema 没声明 fields(空集)→ 三者全空:没有契约,不臆造缺失。
+    """
+    missing: Counter[str] = Counter()
+    extra: Counter[str] = Counter()
+    checked = 0
+    if not schema.fields:
+        return missing, extra, checked
+    for rec in records:
+        if record_version(rec) > schema.current:
+            continue  # 未来行:本机读不懂它的形状,不强行验收
+        climbed, _ = _climb(rec, schema)
+        checked += 1
+        keys = set(climbed) - {VERSION_KEY}
+        for f in schema.fields - keys:
+            missing[f] += 1
+        for f in keys - schema.fields:
+            extra[f] += 1
+    return missing, extra, checked
+
+
 # ── 兼容性报告 ────────────────────────────────────────────────────────────
 @dataclasses.dataclass(frozen=True)
 class Report:
@@ -179,6 +217,9 @@ class Report:
     outdated: int              # 低于当前版、能被抬上来的行数
     from_future: int           # 版本号 > 当前版、抬不动的行数(得先升级代码)
     unstamped: int             # 没有 `_v` 字段的老行数(== dist 里 v1 中无显式版本的部分)
+    missing_fields: dict[str, int]  # schema 快照里有、记录却缺的字段 → 缺它的行数(腐烂信号)
+    extra_fields: dict[str, int]    # 记录里有、快照没声明的字段 → 行数(漂移,宽容)
+    fields_checked: int             # 实际验收过形状的行数(0 == 该账本未声明 schema 快照)
 
     @property
     def current(self) -> int:
@@ -186,8 +227,18 @@ class Report:
 
     @property
     def ok(self) -> bool:
-        """兼容 == 没有任何「来自未来」的行(旧行能抬,不算不兼容)。"""
+        """版本兼容 == 没有任何「来自未来」的行(旧行能抬,不算不兼容)。"""
         return self.from_future == 0
+
+    @property
+    def conforms(self) -> bool:
+        """形状兼容 == 没有任何当前版记录缺失快照声明的字段(extra 是宽容的漂移,不算违约)。"""
+        return not self.missing_fields
+
+    @property
+    def accepted(self) -> bool:
+        """兼容性验收通过 == 版本能读懂(ok)且形状对得上快照(conforms)。"""
+        return self.ok and self.conforms
 
     def to_meta(self) -> dict:
         return {
@@ -195,12 +246,18 @@ class Report:
                     else str(self.path),
             "schema": self.schema.name,
             "current_version": self.current,
+            "schema_fields": sorted(self.schema.fields),
             "total": self.total,
             "version_dist": {str(k): v for k, v in sorted(self.dist.items())},
             "outdated": self.outdated,
             "from_future": self.from_future,
             "unstamped": self.unstamped,
+            "missing_fields": dict(sorted(self.missing_fields.items())),
+            "extra_fields": dict(sorted(self.extra_fields.items())),
+            "fields_checked": self.fields_checked,
             "ok": self.ok,
+            "conforms": self.conforms,
+            "accepted": self.accepted,
         }
 
 
@@ -219,9 +276,11 @@ def check_file(path: pathlib.Path) -> Report:
             outdated += 1
         elif v > schema.current:
             from_future += 1
+    missing, extra, checked = field_audit(records, schema)
     return Report(
         path=path, schema=schema, total=len(records), dist=dict(dist),
         outdated=outdated, from_future=from_future, unstamped=unstamped,
+        missing_fields=dict(missing), extra_fields=dict(extra), fields_checked=checked,
     )
 
 
