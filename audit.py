@@ -21,6 +21,8 @@ import os
 import pathlib
 import threading
 
+import jsonlstore
+
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent
 AUDIT_DIR = _REPO_ROOT / "state" / "audit"
 
@@ -55,12 +57,7 @@ class Auditor:
             # 把字段塞进去；不可 JSON 序列化的值退化成字符串，绝不因此失败
             for k, v in fields.items():
                 rec[k] = v if _json_safe(v) else str(v)
-            try:
-                self.audit_dir.mkdir(parents=True, exist_ok=True)
-                with self._path().open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            except Exception:
-                pass   # 审计是观测者，不能成为新的故障源
+            jsonlstore.append_jsonl(self._path(), rec)   # 写盘出错被吞，审计绝不反噬
             return rec
 
 
@@ -76,18 +73,7 @@ def _json_safe(v) -> bool:
 def read_records(day: str | None = None, limit: int | None = None) -> list[dict]:
     """读出某天(默认今天)的审计记录；坏行直接跳过，返回时间正序列表。"""
     day = day or datetime.date.today().isoformat()
-    path = AUDIT_DIR / f"{day}.jsonl"
-    if not path.exists():
-        return []
-    recs: list[dict] = []
-    for line in path.read_text("utf-8", errors="ignore").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            recs.append(json.loads(line))
-        except Exception:
-            continue
+    recs = jsonlstore.read_jsonl(AUDIT_DIR / f"{day}.jsonl")
     return recs[-limit:] if limit else recs
 
 
