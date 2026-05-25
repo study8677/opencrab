@@ -242,7 +242,7 @@ def advise(goal: str, routes: list[Route], *, use_memory: bool = True) -> Advice
                       aggressive=dataclasses.replace(only, tier="aggressive"))
 
     decisions = [decide(r) for r in routes]
-    seeds, burned = _recall_seeds(goal) if use_memory else ([], False)
+    seeds, burned = recall_seeds(goal) if use_memory else ([], False)
     return Advice(
         goal=goal, decisions=decisions,
         conservative=_pick_conservative(decisions),
@@ -250,8 +250,11 @@ def advise(goal: str, routes: list[Route], *, use_memory: bool = True) -> Advice
         seeds=seeds)
 
 
-def _recall_seeds(text: str, k: int = 2) -> tuple[list[str], bool]:
+def recall_seeds(text: str, k: int = 2) -> tuple[list[str], bool]:
     """软引入 memory：捞相似往事拼成提示行，并判断「同类干法是否栽过」。
+
+    全仓「带记忆校准胆量 / 决定停不停手」的单一闸门——planner 等上层决策模块
+    都软引入这里，缺 memory 就一处退化，不再各自捞一遍。
 
     返回 (提示行, burned)；缺/错则返回 ([], False)，让上层照常给激进建议。
     """
@@ -267,6 +270,9 @@ def _recall_seeds(text: str, k: int = 2) -> tuple[list[str], bool]:
         return lines, burned
     except Exception:
         return [], False
+
+
+_recall_seeds = recall_seeds        # 兼容旧名（曾是私有）
 
 
 # ── 落地 / 回看 ─────────────────────────────────────────────────────
