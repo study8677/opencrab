@@ -29,6 +29,8 @@ import json
 import pathlib
 import re
 
+import jsonlstore
+
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent
 _MEM_DIR = _REPO_ROOT / "state" / "memory"      # 落在被 .gitignore 的 state/ 里
 _EPISODES = _MEM_DIR / "episodes.jsonl"
@@ -104,18 +106,7 @@ def similarity(a: str, b: str) -> float:
 # ── 落地 / 读取 ─────────────────────────────────────────────────────
 def _read_raw() -> list[dict]:
     """读出全部原始记忆字典(时间正序)；坏行跳过，文件缺失返回空。"""
-    if not _EPISODES.exists():
-        return []
-    out: list[dict] = []
-    for line in _EPISODES.read_text("utf-8", errors="ignore").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except Exception:
-            continue
-    return out
+    return jsonlstore.read_jsonl(_EPISODES)
 
 
 def load(limit: int | None = None) -> list[Episode]:
@@ -145,13 +136,8 @@ def remember(situation: str, action: str, result: str, *,
     ep = Episode(at=datetime.datetime.now().isoformat(timespec="seconds"),
                  situation=situation.strip(), action=action.strip(),
                  result=result.strip(), ok=ok, code=code, tags=tuple(tags))
-    try:
-        _MEM_DIR.mkdir(parents=True, exist_ok=True)
-        with _EPISODES.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(ep.to_dict(), ensure_ascii=False) + "\n")
-        _trim_if_needed()
-    except Exception:
-        pass   # 记忆是观测者，不能成为新的故障源
+    if jsonlstore.append_jsonl(_EPISODES, ep.to_dict()):
+        _trim_if_needed()   # 落盘成功才考虑蜕掉最老的；写盘出错被吞，记忆绝不反噬
     return ep
 
 
