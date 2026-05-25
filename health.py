@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""统一健康验证入口 🩺🪞🔧🔥 —— 一条命令把启动前的体检全跑一遍。
+"""统一健康验证入口 🩺🪞🔥 —— 一条命令把启动前的体检全跑一遍。
 
-opencrab 的健康验证一度散在四处，各看一层、各有各的报告格式：
-  · `probe.py`    依赖与外部工具够不够得着(解释器/标准库/git/执行器/第三方包)；
-  · `envcheck.py` 配置与环境一致不一致(.env 缺键/孤儿键/数值/版本)；
+opencrab 的健康验证一度散在多处，各看一层、各有各的报告格式：
+  · `probe.py`    依赖与外部工具够不够得着 + 配置一致不一致(解释器/标准库/
+    git/执行器/第三方包；.env 缺键/孤儿键/数值/版本) —— 原 envcheck 已并入此处；
   · `checkup.py`  整只螃蟹健不健康(文件/语法/导入/结构/仓库完整性)；
   · `smoke.py`    README 教的命令今天还真跑不跑得起来。
 
-四个入口各自能跑很好，但「进化前照一次镜子」要敲四条命令、读四份报告，
+三个入口各自能跑很好，但「进化前照一次镜子」要敲三条命令、读三份报告，
 最分散也最容易漏跑。这里把它们收敛成一个入口，按「由底向上」的顺序串起来：
-能不能跑(probe) → 配置对不对(envcheck) → 整体健不健康(checkup) → 文档真不真(smoke)，
-最后给一份合并结论。原来的四条命令**原样保留**，谁想单看哪一层仍可直接敲。
+能不能跑/配置对不对(probe) → 整体健不健康(checkup) → 文档真不真(smoke)，
+最后给一份合并结论。原来的几条命令**原样保留**，谁想单看哪一层仍可直接敲。
 
 用法:
     python health.py                # 全跑一遍，按层打印 + 合并结论
     python health.py --quiet        # 只在有问题时说话(适合钩子 / CI)
-    python health.py --strict       # 把 probe/envcheck 的 warn 也视作未过
-    python health.py probe          # 只跑某一层(probe/env/checkup/smoke)
-    python health.py env --strict   # 子命令同样接受 --quiet/--strict
+    python health.py --strict       # 把 probe 的 warn 也视作未过
+    python health.py probe          # 只跑某一层(probe/checkup/smoke)
+    python health.py checkup --strict   # 子命令同样接受 --quiet/--strict
 
 退出码：0 = 每一层都过；1 = 任意一层未过。零第三方依赖，纯标准库。
 """
