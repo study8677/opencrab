@@ -1522,3 +1522,9 @@
 - 意图：今天推进 `redactor.py`：在 audit/memory/feedback 落盘前自动识别并脱敏密钥、邮箱、路
 - 变化：
   - 主干 HEAD faae3ee→bebbf7b
+
+## 2026-05-25T17:29:18 · 3f01f33
+- 意图：今天推进 `contracts.py`：为核心模块声明输入/输出/副作用契约，并接入 smoke/regression 
+- 变化：
+  - 航海日志 183→184（+1）
+  - 主干 HEAD bebbf7b→3f01f33
