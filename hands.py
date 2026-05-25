@@ -115,7 +115,7 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     branch = f"crab/{stamp}-{_slug(task)}"
     available = has_hands(executor)
-    base = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "main"
+    base = "main"   # 合并目标恒为主干，绝不跟着「当前分支」跑偏（曾因被 kill 时停在 crab 分支而锁死、进化推不上云端）
 
     if dry_run:
         return _dry_run_preview(task, repo=repo, branch=branch, base=base,
@@ -126,6 +126,7 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
                 "available": available, "changed": False, "integrate": integrate,
                 "note": f"[未找到 {executor} CLI] 本应在分支 {branch} 上（{integrate} 模式）实施：{task[:70]}"}
 
+    _git(repo, "checkout", "-f", base)   # 先强制回主干：确保从 main 开枝、改完也回 main，不在 crab 分支上越积越偏
     if _git(repo, "checkout", "-b", branch).returncode != 0:
         return {"ok": False, "branch": branch, "changed": False,
                 "integrate": integrate, "note": "开分支失败(可能重名)。"}
