@@ -32,6 +32,83 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# ── 各层共用的诊断原语 ───────────────────────────────────────────────
+# probe / envcheck 一度各抄一份 Finding / _ok-_warn-_err / summarize / _MARK，
+# checkup / envcheck 又各抄一份 .env 解析与数值/枚举校验表。重复=漂移的温床。
+# 这里把它们收成唯一真相源；旧入口 `from health import ...` 取用、对外仍原样可见
+# (cap_probe.summarize / cap_envcheck.summarize 经由各自模块取，故仍成立)。
+# 关键约束：这些定义必须排在下面 import checkup/probe/... 之前——
+# 否则跑 `python health.py` 时，被它导入的 probe 反过来 `from health import Finding`
+# 会撞上「health 还没定义到这里」的半成品模块，触发循环导入。
+OK, WARN, ERROR = "ok", "warn", "error"
+_MARK = {OK: "✅", WARN: "⚠️", ERROR: "❌"}
+
+# .env 里需要「能解析成数字」的配置(键 -> 解析器)，填错了心跳一启动就崩。
+NUMERIC_ENV = {
+    "OPENCRAB_TICK_SECONDS": int,
+    "OPENCRAB_DAILY_ENERGY": int,
+    "OPENCRAB_MOLT_EVERY": int,
+    "OPENCRAB_HAND_BUDGET_USD": float,
+}
+# .env 里只能取有限几个值的配置(键 -> 合法集合)。
+ENUM_ENV = {
+    "OPENCRAB_AUTONOMY": {"journal", "propose", "merge", "publish"},
+    "OPENCRAB_EXECUTOR": {"claude", "codex"},
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class Finding:
+    """一条诊断发现：是什么、够不够得着/对不对、(若不对)怎么修。"""
+    level: str        # ok / warn / error
+    label: str        # 检查项名
+    detail: str = ""  # 现状一句话
+    fix: str = ""     # 可操作的修复建议(仅 warn/error 有意义)
+
+    @property
+    def passed(self) -> bool:
+        return self.level == OK
+
+    def to_meta(self) -> dict:
+        return {"level": self.level, "label": self.label,
+                "detail": self.detail, "fix": self.fix}
+
+
+def _ok(label: str, detail: str = "") -> Finding:
+    return Finding(OK, label, detail)
+
+
+def _warn(label: str, detail: str, fix: str) -> Finding:
+    return Finding(WARN, label, detail, fix)
+
+
+def _err(label: str, detail: str, fix: str) -> Finding:
+    return Finding(ERROR, label, detail, fix)
+
+
+def summarize(findings: list[Finding], *, strict: bool = False) -> tuple[bool, int, int]:
+    """归总：(是否健康, error 数, warn 数)。strict 下 warn 也算未过。"""
+    errors = sum(1 for f in findings if f.level == ERROR)
+    warns = sum(1 for f in findings if f.level == WARN)
+    healthy = errors == 0 and (warns == 0 if strict else True)
+    return healthy, errors, warns
+
+
+def parse_env_file(path: pathlib.Path) -> dict[str, str]:
+    """把一个 .env 风格文件解析成 dict(与 crab.py 同款极简解析，零依赖)。"""
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text("utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        # 顺手剥掉行内注释(# 前需有空格，避免误伤值里的 #)
+        out[key.strip()] = val.split(" #", 1)[0].strip()
+    return out
+
+
 import checkup
 import envcheck
 import probe
