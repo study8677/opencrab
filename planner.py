@@ -1272,8 +1272,21 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--verify", metavar="ID", help="把某使命标为已验证(收口腾位)")
     ap.add_argument("--seed", action="store_true", help="从 curator 候选清单纳入新机会")
     ap.add_argument("--kickoff", action="store_true",
-                    help="把头号「进行中」使命交给 plan_goal 起一份计划")
+                    help="把头号「进行中」使命交给 plan_goal 起一份计划；"
+                         "配合 --delegate 则把汇总的分工方案交给 plan_goal 起计划")
+    # —— 分工协作派遣台 🐜（原 delegate.py 并入）——
+    ap.add_argument("--delegate", action="store_true",
+                    help="把目标横切成可并行子任务，派几只临时分身分头检索/实现/验证后汇总")
+    ap.add_argument("--roles", default="",
+                    help=f"只派指定分身（逗号分隔，可选 {'/'.join(_ROLES)}；默认全派；配合 --delegate）")
+    ap.add_argument("--constraint", action="append", default=[],
+                    help="一条硬约束（可多次），如「纯标准库」「别碰 crab.py」（配合 --delegate）")
     args = ap.parse_args(argv)
+
+    # 分工派遣 🐜：任一派遣动作触发就走派遣分支（在计划/看板分支之前截下）
+    if args.delegate:
+        _cmd_delegate(args)
+        return
 
     if args.recent:
         _cmd_recent()
