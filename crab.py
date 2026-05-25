@@ -331,7 +331,7 @@ def form_intent(territory: str, recent: str) -> tuple[str, int]:
     _loc = sum(len(p.read_text("utf-8", errors="ignore").splitlines()) for p in _pys)
     girth = (f"你现在有 {len(_pys)} 个模块、约 {_loc} 行代码——已经不算小了，"
              "其中一些功能明显重叠（外部学习 lookout/mentor；"
-             "诊断 checkup/probe/smoke；防退化 goldens/regression）。")
+             "诊断 checkup/probe/smoke）。")
     prompt = textwrap.dedent(f"""\
         {territory}
 
