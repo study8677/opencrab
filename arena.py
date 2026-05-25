@@ -46,16 +46,16 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent
 _ARENA_DIR = _REPO_ROOT / "state" / "arena"         # 落在被 .gitignore 的 state/ 里
 _ROUNDS = _ARENA_DIR / "rounds.jsonl"               # 每场比赛的快照(可回看)
 
-# 领地的要害器官：方案要碰它们，风险天然更重。软对齐 judge/simulator 的同名清单，
-# 拿不到就用本地兜底，绝不因 import 失败而崩。
+# 演化试验场是一条链路：沙盘(simulator)是评估「脑子」，竞技场补多方案竞争。
+# 要害清单与巨改/失控阈值一律以沙盘为单一来源，竞技场不再各留一份；沙盘缺席才本地兜底，
+# 绝不因 import 失败而崩。
 try:
-    from judge import _VITAL as _VITAL              # type: ignore
+    from simulator import _VITAL, _BIG_LINES, _WIDE_FILES   # type: ignore
 except Exception:                                   # pragma: no cover
     _VITAL = {"crab.py", "hands.py", "checkup.py", "audit.py",
               "capabilities/__init__.py"}
+    _BIG_LINES, _WIDE_FILES = 400, 12
 
-_BIG_LINES = 400        # 「巨改」阈值(与 simulator 对齐)
-_WIDE_FILES = 12        # 改动面「失控」阈值
 _EVIDENCE_CAP = 2       # 单份方案证据加减分的封顶，免得证据压过沙盘本身的净收益
 _CLOSE_MARGIN = 1       # 冠亚军预期收益差 ≤ 此值即判「势均力敌」
 
@@ -224,7 +224,9 @@ def weigh(p: Proposal, *, goal: str = "", constraints: list | None = None) -> Pr
 
 
 def _appraise(p: Proposal, *, goal: str, constraints: list, memory_warn: str) -> None:
-    """优先借 simulator 的沙盘脑子打分；装不上沙盘就用本地兜底，绝不因缺席而崩。"""
+    """统一借 simulator 的沙盘脑子打分——收益/风险/成本只此一套口径，竞技场不再另算。
+    沙盘是同仓的姊妹模块、几乎总在；万一真打不上来，就把这份方案标成「未推演」(收益0)
+    而非偷偷换一套本地公式，宁可少给信号也绝不让两套评分悄悄分叉。"""
     try:
         import simulator
         sb = simulator.Sandbox(
@@ -234,30 +236,10 @@ def _appraise(p: Proposal, *, goal: str, constraints: list, memory_warn: str) ->
         simulator.appraise(sb, goal=goal, constraints=constraints, memory_warn=memory_warn)
         p.benefit, p.risk, p.cost = sb.benefit, sb.risk, sb.cost
         p.failure_chain, p.reasons, p.violations = sb.failure_chain, sb.reasons, sb.violations
-        return
-    except Exception:
-        pass
-    _appraise_local(p, memory_warn=memory_warn)
-
-
-def _appraise_local(p: Proposal, *, memory_warn: str) -> None:
-    """沙盘缺席时的本地兜底打分(与 simulator 的口径大体对齐，保守取重)。"""
-    benefit = 2 * p.new_modules if p.new_modules else (1 if p.est_lines else 0)
-    cost = p.est_lines // 150 + (1 if p.est_lines >= _BIG_LINES else 0) \
-        + (1 if len(p.touches) >= _WIDE_FILES else 0)
-    vital = p.touches_vital()
-    risk = (2 if vital else 0) + (0 if p.has_selftest else 2) \
-        + (0 if p.reversible else 1) + (1 if p.est_lines >= _BIG_LINES else 0) \
-        + (1 if memory_warn else 0)
-    chain: list = []
-    if vital:
-        chain.append(f"动了要害器官 {', '.join(vital)}")
-    if not p.has_selftest:
-        chain.append("没有自测兜底 → 回归不会被当场发现")
-    if memory_warn:
-        chain.append("重蹈覆辙：记忆里同类栽过")
-    p.benefit, p.risk, p.cost = benefit, risk, cost
-    p.failure_chain = chain or ["没有明显的连环失败点——这条路就算栽也栽得轻。"]
+    except Exception as e:                          # pragma: no cover
+        p.benefit = p.risk = p.cost = 0
+        p.reasons = [f"沙盘没接上（{e}），这份方案未推演"]
+        p.failure_chain = ["沙盘缺席 → 无评分，别凭它择优"]
 
 
 # ── 一场比赛：同一目标下各派的竞争 ──────────────────────────────────
