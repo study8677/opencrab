@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""用户实验室 🧪 —— 把新手 / 维护者 / 外部协作者的真实旅程，跑成一条条端到端验收脚本。
+逼自己从「模块各自会跑」进化到「人真的用得顺」。
+
+为什么要有它：领地里已经有一排向**单点**看的层——烟雾(smoke)证「核心还活着」、契约
+(contracts)证「接口没变」、价值(value)证「对谁有用」、健康(health)证「自检全过」。
+它们各自把一块拧得发亮，却没人回答一个更朴素、也更要命的问题：**把它们串起来，一个
+真实的人从头走到尾，顺不顺？** 单点全绿，不等于旅程走得通——新手可能卡在第一步、维
+护者可能改完发现没法确认没退化、外部协作者可能对着文档照做却处处碰壁。这些「接缝处的
+不顺」永远不会让任何单个模块变红，所以它**隐形**。
+
+本层换一个视角：不按模块切，按**人**切。给领地里三种真实使用者各写一条旅程——
+
+  · 🐣 新手(newcomer)    —— 第一次拿到这个仓：它能跑吗？我从哪看起、怎么确认它没坏？
+  · 🛠️ 维护者(maintainer) —— 要动它了：改之前/改之后，怎么一键确认「整体没退化」？
+  · 🤝 协作者(collaborator)—— 想从外部贡献：文档与对外承诺，照着做真的兑现得了吗？
+
+一条旅程是一串**有先后的步骤**，每步是这个人会真的做的一个动作，背后绑一条**能当场复
+跑**的命令。把整条旅程从头跑到尾、每步都退出码 0，才算「这个人此刻真的用得顺」✅；中
+途任何一步红了，就精确地指出**这个人会在哪一步卡住**——那处接缝，就是下一个该治的「不
+顺」。
+
+它和烟雾(smoke)的差别：烟雾问「零件还转吗」，用户实验室问「人沿着零件走，路通吗」。同
+一批命令，换成「以谁的身份、为了什么、按什么顺序」走一遍，卡点才会从接缝里浮出来。
+
+用法：
+    python userlab.py                  # 列出三条旅程及其步骤(只读，不执行)
+    python userlab.py --run            # 端到端跑全部旅程，看每种人此刻走不走得通
+    python userlab.py --run newcomer   # 只跑某一种人的旅程
+    python userlab.py --persona NAME   # 只看某条旅程的步骤(不执行)
+    python userlab.py --quiet          # 只在有旅程走不通时说话(适合钩子 / CI)
+    python userlab.py --json           # 机读：导出旅程定义 +（含 --run 时）逐步结果
+
+零第三方依赖，纯标准库。实验室只读领地、复跑无副作用；任何写盘/起不来都不反噬生命。
+"""
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import pathlib
+import subprocess
+import sys
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent
+STEP_TIMEOUT = 120          # 单步命令的墙钟上限(秒)：跑旅程不该把生命拖死
+_PY = [sys.executable]
+
+
+@dataclasses.dataclass(frozen=True)
+class Step:
+    """旅程里的一步：这个人此刻在做的一个动作，绑一条能当场复跑的命令。"""
+    action: str             # 一句话：这个人在这一步想做成什么
+    argv: list[str]         # 退出码 0 = 这一步对这个人此刻真的走得通
+
+    @property
+    def cmd(self) -> str:
+        """命令的可读形式(隐去 python 解释器路径)。"""
+        return " ".join(self.argv[1:]) if self.argv[:1] == _PY else " ".join(self.argv)
+
+    def to_meta(self) -> dict:
+        return {"action": self.action, "cmd": self.cmd}
+
+
+@dataclasses.dataclass(frozen=True)
+class Journey:
+    """一条端到端旅程：一种真实使用者，按先后顺序走过的若干步。"""
+    persona: str            # 旅程主键：newcomer / maintainer / collaborator
+    icon: str               # 这种人的图标
+    title: str              # 这种人是谁
+    goal: str               # 这种人走这趟，到底想确认什么
+    steps: list[Step]       # 有先后的步骤——前一步通了才轮到下一步
+
+    def to_meta(self) -> dict:
+        return {"persona": self.persona, "icon": self.icon, "title": self.title,
+                "goal": self.goal, "steps": [s.to_meta() for s in self.steps]}
+
+
+# ── 三条旅程：单一真相源 ──────────────────────────────────────────────
+# 每条旅程把一种真实使用者「为了什么、按什么顺序、做哪些动作」钉成一串步骤；每步都绑
+# 领地里**真实存在、能当场跑、且 --quiet 够快**的命令。新做一种「人会怎么用」的设想，
+# 就在这里把它写成一条能端到端复跑的旅程——而不是停在脑补里。
+JOURNEYS: list[Journey] = [
+    Journey(
+        persona="newcomer",
+        icon="🐣",
+        title="新手——第一次拿到这个仓",
+        goal="确认「它真的能跑」，并知道从哪一眼看出它没坏",
+        steps=[
+            Step("先跑核心烟雾，确认最关键的几条路此刻还活着",
+                 _PY + ["smoke.py", "--quiet"]),
+            Step("再做一次整体自检，确认领地作为一个整体是健康的",
+                 _PY + ["health.py", "--quiet"]),
+        ],
+    ),
+    Journey(
+        persona="maintainer",
+        icon="🛠️",
+        title="维护者——要动这个仓了",
+        goal="改之前/改之后，一键确认「接口没变、价值还兑现、整体没退化」",
+        steps=[
+            Step("先确认各层对外接口没被悄悄改坏(契约还成立)",
+                 _PY + ["contracts.py", "--quiet"]),
+            Step("再复核价值卡，确认每次进化绑的受益者此刻还真兑现得了",
+                 _PY + ["value.py", "--check", "--quiet"]),
+            Step("最后整体自检兜底，确认改动没在别处留暗伤",
+                 _PY + ["health.py", "--quiet"]),
+        ],
+    ),
+    Journey(
+        persona="collaborator",
+        icon="🤝",
+        title="外部协作者——想从外部贡献",
+        goal="确认「文档说的 = 仓里做得到的」，照着文档做不会处处碰壁",
+        steps=[
+            Step("先核对文档与代码是否同步(README/用法没和实现脱节)",
+                 _PY + ["docsync.py", "--quiet"]),
+            Step("再复跑对外承诺的证据，确认「我会做 X」这类话今天还兑现得了",
+                 _PY + ["evidence.py", "--quiet"]),
+        ],
+    ),
+]
+
+
+@dataclasses.dataclass(frozen=True)
+class StepResult:
+    """一步复跑后的结果。"""
+    step: Step
+    ok: bool
+    detail: str             # 失败命令的现场原文；通过则空
+
+    def to_meta(self) -> dict:
+        return {**self.step.to_meta(), "ok": self.ok, "detail": self.detail}
+
+
+@dataclasses.dataclass(frozen=True)
+class JourneyResult:
+    """一条旅程端到端跑完后的结果：在第几步卡住(没卡=全程走通)。"""
+    journey: Journey
+    steps: list[StepResult]
+
+    @property
+    def passed(self) -> bool:
+        """整条旅程每一步都通——这种人此刻真的从头走得到尾。"""
+        return all(s.ok for s in self.steps)
+
+    @property
+    def blocked_at(self) -> int:
+        """第一处卡住的步号(从 1 起)；全通返回 0。"""
+        for i, s in enumerate(self.steps, start=1):
+            if not s.ok:
+                return i
+        return 0
+
+    def to_meta(self) -> dict:
+        return {"persona": self.journey.persona, "passed": self.passed,
+                "blocked_at": self.blocked_at,
+                "steps": [s.to_meta() for s in self.steps]}
+
+
+def _run(argv: list[str]) -> tuple[bool, str]:
+    """跑一条命令：退出码 0 → (True, "")。超时/起不来 → (False, 原因)，绝不抛错。"""
+    try:
+        proc = subprocess.run(
+            argv, cwd=str(REPO_ROOT),
+            capture_output=True, text=True, timeout=STEP_TIMEOUT,
+        )
+        if proc.returncode == 0:
+            return True, ""
+        return False, (proc.stderr or proc.stdout or "").strip()[-500:]
+    except subprocess.TimeoutExpired:
+        return False, f"命令超过 {STEP_TIMEOUT}s 未结束"
+    except Exception as e:  # noqa: BLE001  —— 跑旅程是观测者，起不来只是「这次没跑成」
+        return False, f"{type(e).__name__}: {e}"
+
+
+def walk(journey: Journey) -> JourneyResult:
+    """端到端走一条旅程：按顺序跑每步，**一步卡住就停**——精确定位这种人会在哪儿被挡。
+
+    停在第一处失败，是刻意的：真实使用者也会卡在那一步、走不下去；继续硬跑后面的步骤，
+    只会用一堆「其实根本到不了」的失败淹没真正的卡点。
+    """
+    results: list[StepResult] = []
+    for step in journey.steps:
+        ok, detail = _run(step.argv)
+        first = detail.splitlines()[0][:120] if detail else ""
+        results.append(StepResult(step, ok, first))
+        if not ok:
+            break
+    return JourneyResult(journey, results)
+
+
+def _find(persona: str) -> Journey | None:
+    for j in JOURNEYS:
+        if j.persona == persona:
+            return j
+    return None
+
+
+# ── 展示 ──────────────────────────────────────────────────────────────
+def _print_journeys(journeys: list[Journey]) -> None:
+    print(f"🧪 opencrab 用户实验室（{len(journeys)} 条端到端旅程）\n")
+    for j in journeys:
+        print(f"  {j.icon} {j.persona}：{j.title}")
+        print(f"      想确认：{j.goal}")
+        for i, s in enumerate(j.steps, start=1):
+            print(f"        {i}. {s.action}")
+            print(f"           └ {s.cmd}")
+        print()
+    print("  跑 `--run` 把这些旅程从头到尾走一遍，看每种人此刻是否真的用得顺。")
+
+
+def _print_results(results: list[JourneyResult]) -> None:
+    print(f"🧪 端到端走完 {len(results)} 条旅程——每种人此刻走得通吗\n")
+    for r in results:
+        j = r.journey
+        if r.passed:
+            print(f"  ✅ {j.icon} {j.persona}（{len(r.steps)} 步全通：用得顺）")
+        else:
+            print(f"  ⛔ {j.icon} {j.persona}（卡在第 {r.blocked_at} 步：走不到尾）")
+        for i, s in enumerate(r.steps, start=1):
+            mark = "✓" if s.ok else "✗"
+            print(f"        {mark} {i}. {s.step.action}")
+            if not s.ok:
+                print(f"           └ {s.step.cmd}")
+                if s.detail:
+                    print(f"             现场：{s.detail}")
+    passed = sum(1 for r in results if r.passed)
+    print(f"\n  小结：✅{passed}  ⛔{len(results) - passed}")
+    if passed == len(results):
+        print("🧪 三种人都从头走到了尾——接缝处此刻是顺的。")
+    else:
+        bad = [r.journey.persona for r in results if not r.passed]
+        print(f"⚠️  {len(bad)} 种人此刻会卡住：{'、'.join(bad)}（顺着卡住那步去治接缝）")
+
+
+def manifest(run: bool, journeys: list[Journey]) -> dict:
+    """导出纯数据：旅程定义；若 run=True 还附上逐步端到端结果。"""
+    out: dict = {"journeys": [j.to_meta() for j in journeys]}
+    if run:
+        out["results"] = [walk(j).to_meta() for j in journeys]
+    return out
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description="opencrab 用户实验室 🧪")
+    ap.add_argument("--run", nargs="?", const="*", metavar="PERSONA",
+                    help="端到端跑旅程：不带名=全部，带名=只跑该种人")
+    ap.add_argument("--persona", metavar="NAME",
+                    help="只看某种人的旅程步骤(不执行)")
+    ap.add_argument("--quiet", action="store_true",
+                    help="只在有旅程走不通时输出(适合钩子 / CI)")
+    ap.add_argument("--json", action="store_true",
+                    help="导出机读：旅程定义 +（含 --run 时）逐步结果")
+    args = ap.parse_args(argv)
+
+    # 选定要操作的旅程集合(--run NAME / --persona NAME 都可定位单条)
+    target = args.run if (args.run and args.run != "*") else args.persona
+    if target:
+        j = _find(target)
+        if j is None:
+            print(f"⚠️  没有名为 {target!r} 的旅程；可选：{'、'.join(x.persona for x in JOURNEYS)}")
+            sys.exit(2)
+        chosen = [j]
+    else:
+        chosen = JOURNEYS
+
+    if args.json:
+        print(json.dumps(manifest(args.run is not None, chosen),
+                         ensure_ascii=False, indent=2))
+        return
+
+    if args.run is not None:
+        results = [walk(j) for j in chosen]
+        all_ok = all(r.passed for r in results)
+        if not (args.quiet and all_ok):
+            _print_results(results)
+        sys.exit(0 if all_ok else 1)
+
+    if args.quiet:
+        # 静默模式不主动执行旅程；没跑就没有「走不通」可报。
+        sys.exit(0)
+
+    _print_journeys(chosen)
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
