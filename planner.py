@@ -1207,6 +1207,46 @@ def _cmd_recent(n: int = 10) -> None:
         print(f"  {ts}  {goal}  ({done}/{n_steps} 步)")
 
 
+def _cmd_board(args) -> None:
+    """使命看板 CLI（原 missionboard.py 并入）：纳入/验证/播种/发起 + 自动流转后打印。"""
+    if args.kickoff:
+        out = kickoff()
+        if out.get("ok"):
+            print(f"🗂️  已发起:已就「{out['goal']}」起了一份 {out['steps']} 步的计划。")
+            print("    用 `python planner.py --show` 看路线。")
+        else:
+            print(f"🗂️  没能发起：{out.get('reason', '未知原因')}")
+        return
+
+    board = load_board()
+    if args.wip is not None:
+        board.wip = _clamp_wip(args.wip)
+    if args.add:
+        m = board.add(args.add, value=args.value, novelty=args.novelty,
+                      deps=args.dep, why=args.why)
+        print(f"🗂️  已纳入机会池：{m.id}  {m.title}")
+    if args.verify:
+        m = board.verify(args.verify)
+        print(f"🗂️  已验证收口：{m.id}" if m else f"🗂️  没找到使命 `{args.verify}`，无从验证。")
+    if args.seed:
+        added = seed_from_curator(board)
+        if added:
+            print("🗂️  从 curator 纳入 " + str(len(added)) + " 件新机会："
+                  + "、".join(m.id for m in added))
+        else:
+            print("🗂️  curator 没给出可纳入的新候选（缺席或都已在册）。")
+
+    _refresh_novelty(board)
+    moves = board.flow()
+    save_board(board)
+    if moves:
+        print("🗂️  本趟流转：")
+        for mv in moves:
+            print(f"     · {mv}")
+        print("")
+    print(board.render())
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         prog="planner.py",
@@ -1220,10 +1260,29 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--fail", metavar="ID", help="标记某步翻车 → 触发回退、改写路线")
     ap.add_argument("--note", default="", help="给 --done/--fail 附一句结果备注")
     ap.add_argument("--recent", action="store_true", help="回看最近落档的计划后退出")
+    # —— 使命看板 🗂️（原 missionboard.py 并入）——
+    ap.add_argument("--board", action="store_true", help="自动流转后打印整张使命看板")
+    ap.add_argument("--add", metavar="TITLE", help="纳入一件新使命到机会池")
+    ap.add_argument("--value", type=int, default=3, help="新使命的价值 0~5(配合 --add)")
+    ap.add_argument("--novelty", type=int, default=3, help="新使命的新颖度 0~5(配合 --add)")
+    ap.add_argument("--dep", action="append", default=[], metavar="ID",
+                    help="新使命依赖的使命 id(可多次;依赖须全验过才解锁,配合 --add)")
+    ap.add_argument("--why", default="", help="为什么提这件使命(配合 --add)")
+    ap.add_argument("--wip", type=int, default=None, help="把同时开工(进行中)上限改成 N")
+    ap.add_argument("--verify", metavar="ID", help="把某使命标为已验证(收口腾位)")
+    ap.add_argument("--seed", action="store_true", help="从 curator 候选清单纳入新机会")
+    ap.add_argument("--kickoff", action="store_true",
+                    help="把头号「进行中」使命交给 plan_goal 起一份计划")
     args = ap.parse_args(argv)
 
     if args.recent:
         _cmd_recent()
+        return
+
+    # 使命看板：任一看板动作触发，则走看板分支（不与计划路线混淆）
+    if (args.board or args.add or args.verify or args.seed or args.kickoff
+            or args.wip is not None):
+        _cmd_board(args)
         return
 
     # 推进 active 计划的一步
