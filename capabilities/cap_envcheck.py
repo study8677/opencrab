@@ -1,4 +1,4 @@
-"""能力 · 配置与环境一致性 🔧 —— 复用 envcheck.py，启动前确认运行条件对齐。
+"""能力 · 配置与环境一致性 🔧 —— 复用 probe.py --env，启动前确认运行条件对齐。
 
 和 `cap_checkup`(宽口径体检)分工：这里只盯「配置与环境的一致性」一件事——
 .env 与范本是否对齐、数值/枚举填得对不对、本机依赖版本符不符合约定，
@@ -19,11 +19,11 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 def run(ctx: dict) -> Result:
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
-    import envcheck
+    import probe
 
     strict = bool((ctx or {}).get("strict"))
-    findings = envcheck.run()
-    healthy, errors, warns = envcheck.summarize(findings, strict=strict)
+    findings = probe.run(probe.ENV_PROBES)   # 原 envcheck 已并入 probe.py --env
+    healthy, errors, warns = probe.summarize(findings, strict=strict)
 
     if healthy:
         summary = f"{len(findings)} 项校验通过" + (f"（{warns} 处提醒）" if warns else "")
@@ -33,7 +33,7 @@ def run(ctx: dict) -> Result:
 
     detail_lines = []
     for f in findings:
-        mark = envcheck._MARK[f.level]
+        mark = probe._MARK[f.level]
         line = f"{mark} {f.label}" + (f" — {f.detail}" if f.detail else "")
         if f.fix:
             line += f"\n    ↳ 修复：{f.fix}"

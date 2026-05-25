@@ -355,7 +355,6 @@ def self_check_run() -> tuple[bool, list[tuple[bool, str, str]]]:
     return healthy, results
 
 
-import envcheck
 import probe
 import smoke
 
@@ -371,7 +370,7 @@ class Layer:
 
 
 def _run_probe(strict: bool) -> Layer:
-    findings = probe.run()
+    findings = probe.run(probe.RUNTIME_PROBES)
     healthy, errors, warns = probe.summarize(findings, strict=strict)
     summary = (f"{len(findings)} 项探测通过" + (f"（{warns} 处提醒）" if warns else "")
                if healthy else f"{errors} 处缺失")
@@ -380,8 +379,8 @@ def _run_probe(strict: bool) -> Layer:
 
 
 def _run_envcheck(strict: bool) -> Layer:
-    findings = envcheck.run()
-    healthy, errors, warns = envcheck.summarize(findings, strict=strict)
+    findings = probe.run(probe.ENV_PROBES)
+    healthy, errors, warns = probe.summarize(findings, strict=strict)
     summary = (f"{len(findings)} 项校验通过" + (f"（{warns} 处提醒）" if warns else "")
                if healthy else f"{errors} 处不一致")
     detail = "\n".join(_finding_line(f) for f in findings)
