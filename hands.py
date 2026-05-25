@@ -41,8 +41,8 @@ def _plan_cmd(task: str, executor: str, budget_usd: float) -> list[str]:
     if executor == "codex":  # 实验性
         return ["codex", "exec", "--sandbox", "workspace-write", task]
     return ["claude", "-p", task, "--permission-mode", "acceptEdits",
-            "--allowedTools", "Read Edit Write Glob Grep",
-            "--disallowedTools", "Bash WebFetch WebSearch",
+            "--allowedTools", "Read Edit Write Glob Grep Bash(git rm:*) Bash(git mv:*)",
+            "--disallowedTools", "WebFetch WebSearch",
             "--max-budget-usd", str(budget_usd), "--output-format", "text"]
 
 
