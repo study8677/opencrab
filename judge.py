@@ -341,8 +341,8 @@ def main(argv: list | None = None) -> None:
     checkup_ok: bool | None = None
     if not args.no_checkup:
         try:
-            import checkup
-            checkup_ok = checkup.main(["--quiet"]) in (0, None)
+            import health
+            checkup_ok = health.main(["checkup", "--quiet"]) in (0, None)
         except SystemExit as e:        # checkup 用退出码表态
             checkup_ok = (e.code in (0, None))
         except Exception:

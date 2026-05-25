@@ -1,4 +1,4 @@
-"""能力 · 自检 🪞 —— 复用领地的镜子 checkup.py，照一次健康。"""
+"""能力 · 自检 🪞 —— 复用领地的镜子 health.py 自检层，照一次健康。"""
 from __future__ import annotations
 
 import pathlib
@@ -14,9 +14,9 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 def run(ctx: dict) -> Result:
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
-    import checkup
+    import health
 
-    healthy, results = checkup.run()
+    healthy, results = health.self_check_run()
     failed = [label for ok, label, _ in results if not ok]
     summary = (f"{len(results)} 项全部通过" if healthy
                else f"{len(failed)} 处未过：{', '.join(failed)}")
