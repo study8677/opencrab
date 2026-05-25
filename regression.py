@@ -405,6 +405,132 @@ def update_path() -> dict:
     return fp
 
 
+# ════════════════════════════════════════════════════════════════════
+# 烟雾测试 · README 教的命令今天还跑不跑得起来 🔥
+#   checkup 看「器官在不在」、snapshot/path 看「行为变没变」，这一层守的是
+#   最朴素的另一面：**README 教人敲的那几条命令，今天还跑得起来吗？** 文档最易
+#   悄悄漂移——命令改名、子命令删了、退出码变了。它做两件事：① 文档同步：每条
+#   示例命令必须原样还在 README 里；② 真能跑：只读命令就地跑，有副作用的进临时
+#   副本跑(复用上面的 _DREAM_ENV / _COPY_IGNORE / _run_cmd，副作用跑完即弃)。
+# ════════════════════════════════════════════════════════════════════
+README = REPO_ROOT / "README.md"
+
+
+@dataclasses.dataclass
+class Sample:
+    """一条「可执行示例」：README 里教的某条命令，连同怎么验证它真能跑。
+
+    `doc` 是它在 README 里的原样文本，用来守「文档没漂移」这道防线。
+    `argv` 为空表示「只校验文档、不执行」(留给天生不结束的命令，如持续心跳)。
+    `isolate=True` 表示命令有副作用，要在仓库的临时副本里跑，跑完即弃。
+    """
+    name: str
+    doc: str                    # 命令在 README 里的原样文本
+    argv: list[str]             # 真正执行的命令(含解释器)；[] = 只校验文档
+    summary: str
+    expect_exit: int = 0        # 期望的退出码
+    expect_substr: str = ""     # 输出里应出现的片段(留空=只看退出码)
+    isolate: bool = False       # True = 在临时副本里跑(命令有副作用)
+
+
+SAMPLES = [
+    Sample("checkup", "python checkup.py", [_PY, "checkup.py"],
+           "领地自检跑得起来、报告健康", expect_substr="健康"),
+    Sample("checkup-quiet", "python checkup.py --quiet", [_PY, "checkup.py", "--quiet"],
+           "自检 --quiet 全过时静默、退出码 0"),
+    Sample("crab-once", "python crab.py --once", [_PY, "crab.py", "--once"],
+           "心跳一次能从醒来走到沉淀(在临时副本里跑)",
+           expect_substr="沉淀完毕", isolate=True),
+    Sample("crab-live", "python crab.py", [],
+           "持续心跳(天生不结束，只校验 README 仍这么教，不执行)"),
+]
+
+
+@dataclasses.dataclass
+class Outcome:
+    """一条烟雾用例的结论。"""
+    name: str
+    ok: bool
+    detail: str
+
+
+def _run_isolated(argv: list[str]) -> tuple[int, str]:
+    """把领地复制进临时目录再跑——副作用全落在临时目录，跑完即弃。"""
+    with tempfile.TemporaryDirectory(prefix="opencrab-smoke-") as tmp:
+        sandbox = pathlib.Path(tmp) / "repo"
+        shutil.copytree(REPO_ROOT, sandbox, ignore=_COPY_IGNORE)
+        return _run_cmd(argv, sandbox)
+
+
+def _check_sample(sample: Sample, readme_text: str) -> Outcome:
+    # 1) 文档同步：命令必须原样还在 README 里。
+    if sample.doc not in readme_text:
+        return Outcome(sample.name, False,
+                       f"README 里找不到 `{sample.doc}` —— 文档漂移了？"
+                       f"修复：让 README 与命令对齐，或更新本用例的 doc")
+    # 2) 只校验文档的用例(argv 为空)到此为止。
+    if not sample.argv:
+        return Outcome(sample.name, True, f"`{sample.doc}`(只校验文档)")
+    # 3) 真能跑：只读的就地跑，有副作用的进临时副本跑。
+    exit_code, out = (_run_isolated(sample.argv) if sample.isolate
+                      else _run_cmd(sample.argv, REPO_ROOT))
+    if exit_code != sample.expect_exit:
+        tail = out.strip().splitlines()[-1][:160] if out.strip() else "(无输出)"
+        return Outcome(sample.name, False,
+                       f"退出码 {exit_code}(期望 {sample.expect_exit})：{tail}")
+    if sample.expect_substr and sample.expect_substr not in out:
+        return Outcome(sample.name, False,
+                       f"输出里没等到「{sample.expect_substr}」—— 行为变了？")
+    where = "临时副本" if sample.isolate else "就地"
+    return Outcome(sample.name, True, f"`{sample.doc}` 跑通({where})")
+
+
+def _readme_python_commands(text: str) -> list[str]:
+    """从 README 的 ```bash``` 代码块里捞出所有 `python ...` 命令行(去重保序)。"""
+    cmds: list[str] = []
+    in_block = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_block = stripped.startswith("```bash") if stripped != "```" else False
+            continue
+        if in_block and stripped.startswith("python "):
+            core = stripped.split(" || ", 1)[0].split(" && ", 1)[0].strip()
+            if core not in cmds:
+                cmds.append(core)
+    return cmds
+
+
+@dataclasses.dataclass
+class SmokeVerdict:
+    """一次烟雾测试的结论。"""
+    ok: bool
+    outcomes: list[Outcome]
+    uncovered: list[str]   # README 里出现、却没有对应用例的 python 命令(只提示)
+
+
+def verify_smoke() -> SmokeVerdict:
+    """跑完所有烟雾用例，外加扫一遍 README 里有没有「没被覆盖」的命令。"""
+    text = README.read_text("utf-8") if README.is_file() else ""
+    outcomes = [_check_sample(s, text) for s in SAMPLES]
+    documented = {s.doc for s in SAMPLES}
+    uncovered = [c for c in _readme_python_commands(text) if c not in documented]
+    return SmokeVerdict(ok=all(o.ok for o in outcomes),
+                        outcomes=outcomes, uncovered=uncovered)
+
+
+def _run_smoke() -> "Layer":
+    v = verify_smoke()
+    lines = [f"  {'✅' if o.ok else '❌'} {o.name} — {o.detail}" for o in v.outcomes]
+    if v.uncovered:
+        lines.append("  ⚪ README 这些命令还没被烟雾用例覆盖(建议补进 SAMPLES)：")
+        lines += [f"       $ {c}" for c in v.uncovered]
+    failed = [o for o in v.outcomes if not o.ok]
+    summary = (f"{len(v.outcomes)} 条示例都真能跑、且 README 没漂移" if v.ok
+               else f"{len(failed)} 条失败——README 与行为对不上了")
+    return Layer("smoke", "🔥 烟雾测试 · README 关键用法真能跑吗", v.ok, summary, "\n".join(lines))
+
+
 @dataclasses.dataclass
 class Layer:
     """一层回归验证的归一化结论：跑哪层、过没过、一句话现状、多行明细。"""
