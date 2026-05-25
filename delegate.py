@@ -225,15 +225,15 @@ def _draft(st: Subtask, pool: list[Evidence], *, goal: str) -> Finding:
 
 
 def _verify(f: Finding, *, goal: str, constraints: list) -> None:
-    """这只分身自验它那段的风险：优先借 arena 沙盘脑子，装不上就本地兜底。"""
+    """这只分身自验它那段的风险：优先借 simulator 沙盘脑子，装不上就本地兜底。"""
     try:
-        import arena
-        sb = arena.Sandbox(
+        import simulator
+        sb = simulator.Sandbox(
             name=f.title, approach=f.approach,
             new_modules=1 if f.role == "maker" else 0,
             est_lines=f.est_lines, touches=list(f.touches),
             has_selftest=f.wants_selftest, reversible=f.reversible)
-        arena.appraise(sb, goal=goal, constraints=constraints)
+        simulator.appraise(sb, goal=goal, constraints=constraints)
         f.risk = sb.risk
         f.risk_notes = list(sb.failure_chain)
         return
@@ -243,7 +243,7 @@ def _verify(f: Finding, *, goal: str, constraints: list) -> None:
 
 
 def _verify_local(f: Finding) -> None:
-    """沙盘缺席时的本地兜底自验（与 arena 口径大体对齐，保守取重）。"""
+    """沙盘缺席时的本地兜底自验（与 simulator 口径大体对齐，保守取重）。"""
     vital = f.touches_vital()
     risk = (2 if vital else 0) + (0 if f.wants_selftest else 2) \
         + (0 if f.reversible else 1) + (1 if f.est_lines >= _BIG_LINES else 0)
