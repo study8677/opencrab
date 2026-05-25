@@ -36,6 +36,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+
+try:
+    import resource   # POSIX only；缺了就降级为「不量内存」
+except ImportError:    # pragma: no cover - Windows 等无 resource
+    resource = None
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
@@ -622,6 +628,266 @@ def _update(keys: list[str]) -> None:
     print("   样本写入 goldens/，记得连同改动一起提交。")
 
 
+# ════════════════════════════════════════════════════════════════════
+# 命令级性能基线与回归告警 · 变强了，是不是也悄悄变慢了 ⏱️🚨
+#   snapshot/path/smoke 守的都是「行为对不对」，这一层守最后一条防线——**性能
+#   退化**：功能越加越多，核心命令可能在不知不觉里越跑越慢、越吃越多内存。
+#   它跑一组核心命令，量耗时/峰值内存/退出码，与**本机历史基线**逐条比对。
+#
+#   为什么是 --perf 而非默认层：基线强烈依赖机器(CPU/磁盘/负载)，跨机器比对
+#   没有意义，故落在被 .gitignore 的 state/perf/baseline.json，每台机器各自校准
+#   ——它不是能提交进仓库的黄金样本，因此独立成一个**显式开关**的层，不混进默认跑。
+#
+#   怎么不误报：耗时取多次采样的最小值(最接近纯计算成本)；双重门槛(既慢过
+#   threshold_pct，又慢过 min_delta_ms)挡住小命令的百分比抖动；退出码 0→非0
+#   单独判为回归(跑挂了比慢更严重)。内存用标准库 resource 尽力而为(POSIX、近似)。
+# ════════════════════════════════════════════════════════════════════
+PERF_DIR = REPO_ROOT / "state" / "perf"        # 落在被 .gitignore 的 state/ 里
+PERF_BASELINE_PATH = PERF_DIR / "baseline.json"
+
+# 默认阈值：慢过基线 25% 且 绝对增量超过 80ms 才告警(双重门槛，挡抖动)
+PERF_THRESHOLD_PCT = 25.0
+PERF_MIN_DELTA_MS = 80.0
+PERF_REPEAT = 3
+
+
+@dataclasses.dataclass
+class Bench:
+    """一条被测命令：跑什么、给人看的可读说明。"""
+    name: str
+    argv: list[str]            # 在仓库根下执行的命令(含解释器)
+    summary: str
+
+
+# 核心命令：启动/能力清单/自检/单跑能力——日常最常走的路径，最值得守住速度。
+BENCHES = [
+    Bench("crab-help", [_PY, "crab.py", "--help"],
+          "crab.py 启动与参数解析的基础开销"),
+    Bench("crab-caps", [_PY, "crab.py", "caps"],
+          "能力发现+清单渲染(能力越加越多，这里最先变慢)"),
+    Bench("checkup", [_PY, "checkup.py", "--quiet"],
+          "整套健康自检的耗时"),
+    Bench("cap-snapshot", [_PY, "crab.py", "cap", "snapshot"],
+          "单跑 snapshot 能力(扫仓库，规模越大越慢)"),
+]
+
+
+def _maxrss_kb() -> float | None:
+    """读当前已回收子进程的峰值 RSS(KB)；无 resource 则 None。
+
+    注意系统语义：RUSAGE_CHILDREN.ru_maxrss 是「最大的那个子进程」的峰值，
+    且单位随平台不同(Linux=KB, macOS=字节)，这里统一归一到 KB。
+    """
+    if resource is None:
+        return None
+    rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    if rss <= 0:
+        return None
+    # macOS 上 ru_maxrss 是字节，Linux 上是 KB——按平台归一到 KB
+    return rss / 1024.0 if sys.platform == "darwin" else float(rss)
+
+
+def _perf_measure_once(bench: Bench) -> dict:
+    """跑一次，返回 {duration_ms, exit, mem_kb}(mem 为近似/可能 None)。"""
+    env = {**os.environ, **_STABLE_ENV}
+    mem_before = _maxrss_kb()
+    t0 = time.perf_counter()
+    try:
+        proc = subprocess.run(bench.argv, cwd=str(REPO_ROOT), env=env,
+                              capture_output=True, text=True, timeout=120)
+        exit_code = proc.returncode
+    except Exception:     # 起不来/超时也是一种「性能」——记为失败退出码
+        exit_code = -1
+    duration_ms = (time.perf_counter() - t0) * 1000.0
+    mem_after = _maxrss_kb()
+    mem_kb = None
+    if mem_before is not None and mem_after is not None:
+        delta = mem_after - mem_before
+        mem_kb = delta if delta > 0 else None    # 因 maxrss 是单调最大值，只在抬升时记
+    return {"duration_ms": duration_ms, "exit": exit_code, "mem_kb": mem_kb}
+
+
+def perf_sample(bench: Bench, repeat: int = PERF_REPEAT) -> dict:
+    """对一条命令采样 repeat 次，取最小耗时(最接近纯计算成本)。"""
+    runs = [_perf_measure_once(bench) for _ in range(max(1, repeat))]
+    best = min(runs, key=lambda r: r["duration_ms"])
+    mems = [r["mem_kb"] for r in runs if r["mem_kb"] is not None]
+    return {
+        "duration_ms": round(best["duration_ms"], 1),
+        "exit": best["exit"],
+        "mem_kb": round(max(mems), 1) if mems else None,
+        "repeat": len(runs),
+    }
+
+
+def _load_perf_baseline() -> dict:
+    """读本机基线；不存在或坏了都退化成空 dict(视作未录)。"""
+    if not PERF_BASELINE_PATH.exists():
+        return {}
+    try:
+        return json.loads(PERF_BASELINE_PATH.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def update_perf(repeat: int = PERF_REPEAT) -> dict:
+    """(重新)录制所有命令为本机基线，返回写入的基线数据。"""
+    PERF_DIR.mkdir(parents=True, exist_ok=True)
+    samples = {b.name: perf_sample(b, repeat) for b in BENCHES}
+    data = {
+        "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "platform": sys.platform,
+        "repeat": repeat,
+        "benches": samples,
+    }
+    PERF_BASELINE_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", "utf-8")
+    return data
+
+
+@dataclasses.dataclass
+class PerfVerdict:
+    """一次性能比对的结论。"""
+    ok: bool
+    total: int
+    measured: dict              # name -> 本次采样
+    baseline: dict              # name -> 基线采样
+    regressed: list[dict]       # 每条：{name, kind, baseline_ms, current_ms, delta_pct, ...}
+    missing: list[str]          # 还没录过基线的命令
+    has_baseline: bool
+
+
+def verify_perf(repeat: int = PERF_REPEAT,
+                threshold_pct: float = PERF_THRESHOLD_PCT,
+                min_delta_ms: float = PERF_MIN_DELTA_MS) -> PerfVerdict:
+    """采样当前性能并与本机基线逐条比对，给出回归结论(不改基线)。"""
+    base = _load_perf_baseline()
+    base_benches = base.get("benches", {})
+    has_baseline = bool(base_benches)
+
+    measured: dict[str, dict] = {}
+    regressed: list[dict] = []
+    missing: list[str] = []
+
+    for bench in BENCHES:
+        cur = perf_sample(bench, repeat)
+        measured[bench.name] = cur
+        b = base_benches.get(bench.name)
+        if not has_baseline or b is None:
+            missing.append(bench.name)
+            continue
+        base_ms = float(b.get("duration_ms", 0) or 0)
+        cur_ms = cur["duration_ms"]
+        # 1) 退出码回归：命令跑挂了，比慢更严重
+        if b.get("exit") == 0 and cur["exit"] != 0:
+            regressed.append({
+                "name": bench.name, "kind": "exit",
+                "baseline_exit": b.get("exit"), "current_exit": cur["exit"],
+                "baseline_ms": base_ms, "current_ms": cur_ms, "delta_pct": None,
+            })
+            continue
+        # 2) 耗时回归：双重门槛——百分比 + 绝对毫秒，都超才告警
+        if base_ms > 0:
+            delta_ms = cur_ms - base_ms
+            delta_pct = delta_ms / base_ms * 100.0
+            if delta_pct > threshold_pct and delta_ms > min_delta_ms:
+                regressed.append({
+                    "name": bench.name, "kind": "slower",
+                    "baseline_ms": base_ms, "current_ms": cur_ms,
+                    "delta_ms": round(delta_ms, 1),
+                    "delta_pct": round(delta_pct, 1),
+                })
+
+    ok = has_baseline and not regressed and not missing
+    return PerfVerdict(ok=ok, total=len(BENCHES), measured=measured,
+                       baseline=base_benches, regressed=regressed,
+                       missing=missing, has_baseline=has_baseline)
+
+
+def _perf_audit(v: PerfVerdict) -> None:
+    """把本次比对留痕到审计：每条采样一条 perf_sample，每条回归一条 perf_regression。
+
+    审计是观测者，绝不反噬——任何异常都吞掉，不让留痕本身弄死调用方。
+    """
+    try:
+        import audit
+        for name, m in v.measured.items():
+            audit.record("perf_sample", bench=name, duration_ms=m["duration_ms"],
+                         exit=m["exit"], mem_kb=m["mem_kb"], repeat=m.get("repeat"))
+        for r in v.regressed:
+            audit.record("perf_regression", **r)
+    except Exception:
+        pass
+
+
+def _fmt_ms(ms: float | None) -> str:
+    if ms is None:
+        return "—"
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    return f"{ms / 1000:.2f}s"
+
+
+def _run_perf_list() -> None:
+    print("⏱️  被测命令：")
+    base = _load_perf_baseline().get("benches", {})
+    for b in BENCHES:
+        tag = "已录" if b.name in base else "未录"
+        base_ms = _fmt_ms(base.get(b.name, {}).get("duration_ms")) if b.name in base else "—"
+        print(f"  [{tag}] {b.name}（基线 {base_ms}）— {b.summary}")
+
+
+def _run_perf_update(repeat: int) -> None:
+    data = update_perf(repeat)
+    print(f"⏱️  已录制 {len(data['benches'])} 条本机性能基线 → "
+          f"{PERF_BASELINE_PATH.relative_to(REPO_ROOT)}（平台 {data['platform']}）")
+    for name, s in data["benches"].items():
+        print(f"     {name}: {_fmt_ms(s['duration_ms'])}"
+              + (f" · {s['mem_kb']:.0f}KB" if s["mem_kb"] else ""))
+    print("   基线是本机资产，不进仓库——换机器请重新 --perf --update。")
+
+
+def _run_perf(repeat: int, threshold_pct: float, quiet: bool) -> int:
+    """跑性能比对层，打印报告，返回退出码(0=无回归 / 1=有回归或未录)。"""
+    v = verify_perf(repeat, threshold_pct)
+    _perf_audit(v)
+
+    if not v.has_baseline:
+        print("⏱️  opencrab 命令级性能比对\n")
+        print("  ⚪ 本机还没有性能基线——先跑 python regression.py --perf --update 校准。\n")
+        return 1
+
+    if not (quiet and v.ok):
+        print("⏱️  opencrab 命令级性能比对\n")
+        for b in BENCHES:
+            m = v.measured.get(b.name, {})
+            base_ms = v.baseline.get(b.name, {}).get("duration_ms")
+            reg = next((r for r in v.regressed if r["name"] == b.name), None)
+            if b.name in v.missing:
+                print(f"  ⚪ {b.name} — 未录基线（本次 {_fmt_ms(m.get('duration_ms'))}）")
+            elif reg and reg["kind"] == "exit":
+                print(f"  ❌ {b.name} — 退出码回归 {reg['baseline_exit']}→{reg['current_exit']}")
+            elif reg:
+                print(f"  ❌ {b.name} — 变慢 {reg['delta_pct']}%："
+                      f"{_fmt_ms(reg['baseline_ms'])} → {_fmt_ms(reg['current_ms'])}")
+            else:
+                print(f"  ✅ {b.name} — {_fmt_ms(base_ms)} → {_fmt_ms(m.get('duration_ms'))}")
+        print()
+
+    if v.ok:
+        if not quiet:
+            print(f"🦀 无性能回归：{v.total} 条命令均未慢过基线。")
+        return 0
+    parts = []
+    if v.regressed:
+        parts.append(f"{len(v.regressed)} 条回归")
+    if v.missing:
+        parts.append(f"{len(v.missing)} 条未录基线")
+    print(f"⚠️  {'、'.join(parts)}——若是有意为之(如换了机器/接受了新成本)，"
+          f"确认后 python regression.py --perf --update 重录基线。回归已写入审计(state/audit)。")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="opencrab 统一回归验证链 🧪🛤️")
     ap.add_argument("layer", nargs="?", choices=ORDER,
@@ -630,7 +896,25 @@ def main(argv: list[str] | None = None) -> None:
                     help="确认当前行为正确后，(重新)录制黄金样本")
     ap.add_argument("--quiet", action="store_true",
                     help="只在有回归时输出(适合钩子 / CI)")
+    ap.add_argument("--perf", action="store_true",
+                    help="跑命令级性能比对层(与本机基线比，基线不进仓库，需显式开启)")
+    ap.add_argument("--list", action="store_true",
+                    help="(配合 --perf)只列出有哪些被测命令")
+    ap.add_argument("--repeat", type=int, default=PERF_REPEAT,
+                    help=f"(配合 --perf)每条命令采样次数，取最小(默认 {PERF_REPEAT})")
+    ap.add_argument("--threshold-pct", type=float, default=PERF_THRESHOLD_PCT,
+                    help=f"(配合 --perf)耗时慢过基线多少%%才告警(默认 {PERF_THRESHOLD_PCT})")
     args = ap.parse_args(argv)
+
+    # 性能层是显式开关、与本机基线(不进仓库)比对，独立于默认的黄金样本层。
+    if args.perf:
+        if args.list:
+            _run_perf_list()
+            return
+        if args.update:
+            _run_perf_update(args.repeat)
+            return
+        sys.exit(_run_perf(args.repeat, args.threshold_pct, args.quiet))
 
     keys = [args.layer] if args.layer else ORDER
 
