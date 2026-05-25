@@ -347,15 +347,18 @@ def probe_api_key() -> list[Finding]:
                   "想接真大脑：在 .env 填上任意 OpenAI 兼容 key")]
 
 
-PROBES = [probe_python, probe_stdlib, probe_external_tools,
-          probe_executor, probe_packages,
-          probe_env_example, probe_env_parity, probe_env_values, probe_api_key]
+# 探测分两族：运行时够不够得着(runtime) / 配置对不对齐(env，原 envcheck)。
+# 拆开是为了让 `--env` 与各调用方能只取配置一致性那一半(原 envcheck 的职责)。
+RUNTIME_PROBES = [probe_python, probe_stdlib, probe_external_tools,
+                  probe_executor, probe_packages]
+ENV_PROBES = [probe_env_example, probe_env_parity, probe_env_values, probe_api_key]
+PROBES = RUNTIME_PROBES + ENV_PROBES
 
 
-def run() -> list[Finding]:
-    """跑完所有探测，返回发现列表(探针自身出错也收敛成一条 error)。"""
+def run(probes: list | None = None) -> list[Finding]:
+    """跑完指定探测(默认全跑)，返回发现列表(探针自身出错也收敛成一条 error)。"""
     findings: list[Finding] = []
-    for p in PROBES:
+    for p in (PROBES if probes is None else probes):
         try:
             findings.extend(p())
         except Exception as e:
@@ -401,9 +404,11 @@ def main(argv: list[str] | None = None) -> None:
                     help="把 warn 也视作未过(更严格的门禁)")
     ap.add_argument("--audit", action="store_true",
                     help="把探测结果写进当天的运行审计")
+    ap.add_argument("--env", action="store_true",
+                    help="只跑配置与环境一致性那一族探测(原 envcheck)")
     args = ap.parse_args(argv)
 
-    findings = run()
+    findings = run(ENV_PROBES if args.env else None)
     healthy, errors, warns = summarize(findings, strict=args.strict)
 
     if args.audit:
