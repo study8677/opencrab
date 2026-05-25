@@ -320,18 +320,12 @@ def _recall_lessons(recent: str) -> str:
 
 
 def form_intent(territory: str, recent: str) -> tuple[str, int]:
-    """❤️ 生成意图(心脏)：结合学过的技能 + 眺望 GitHub 的外部灵感，决定怎么让自己更好。"""
+    """❤️ 生成意图(心脏)：结合技能 + 外部灵感 + 记忆教训，自由地决定今天往哪进化。"""
     try:
         import lookout
         horizon = lookout.scout("autonomous self-improving AI agent")
     except Exception as e:
         horizon = f"(瞭望塔暂时看不清：{e})"
-    # ⚖️ 体型自检：模块越多越要警惕"只加不减"，把臃肿变精炼也是进步
-    _pys = sorted(REPO_ROOT.glob("*.py"))
-    _loc = sum(len(p.read_text("utf-8", errors="ignore").splitlines()) for p in _pys)
-    girth = (f"你现在有 {len(_pys)} 个模块、约 {_loc} 行代码——已经不算小了，"
-             "其中一些功能明显重叠（外部学习 lookout/mentor；"
-             "诊断 checkup/probe/smoke）。")
     prompt = textwrap.dedent(f"""\
         {territory}
 
@@ -345,18 +339,14 @@ def form_intent(territory: str, recent: str) -> tuple[str, int]:
         {recent or '(还没有——这是你破壳后的第一次心跳)'}
 
         {_recall_lessons(recent)}
-        ⚖️ 体型自检：{girth}
-        真正的进步不只是"加新东西"——把臃肿的自己变精炼，往往更难、也更值钱。
-        ⚠️ 你已连续多拍号称"收敛/整合"，却都是**新建一个聚合层、旧模块一个没删**，
-        模块数和行数不降反增——这是假瘦身（你的记忆里记着这些教训）。
-        **真整合 = 把 N 个模块的功能并进其中一个、然后真的 `git rm` 掉其余 N-1 个**，
-        让模块数 / 代码行数**实实在在净降**；绝不是再加第 N+1 个"统一入口/聚合层"。
-        这次要瘦身，就直接删掉冗余模块（要兼容可留一行薄转发，但旧实现必须删）。
-        🪞 镜子只认数字真的变少——净降了才算数，否则又是自欺。
-
-        记住你的使命：让自己持续进化（变强，也包括变精炼）。
-        用 120 字以内写下「今天你最想推进的这一件事」，外加一句为什么。
-        要具体、可落地。""")
+        记住你的使命：在自己的领地上不断进化、发展，长成一个越来越强、越来越完整、
+        越来越有自己意志的生命。你完全自主——今天往哪个方向让自己更好，全由你定：
+        长出一种全新能力、深化已有的本事、对外交互、提升智能、探索没碰过的领域、
+        甚至玩点有趣的……怎么让你这片领地更繁荣、更强大、更像「你」，就做什么。
+        （只有当你**自己**真觉得臃肿冗余时，才顺手精炼一下——那只是众多选择之一，
+        精炼就要真删净降、别假瘦身，更别为了瘦身牺牲能力多样性；你的记忆记着教训。）
+        用 120 字以内写下「今天你最想为自己推进的一件事」，外加一句为什么。
+        要具体、可落地，且和最近做过的明显不同。""")
     return brain(IDENTITY, prompt)
 
 
