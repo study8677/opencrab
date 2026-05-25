@@ -209,9 +209,9 @@ def _goals_from_missionboard() -> list[_Goal]:
     """从使命看板取「进行中 + 机会池」的使命当对外目标；缺席/出错从容返回空。"""
     goals: list[_Goal] = []
     try:
-        import missionboard
-        board = missionboard.load()
-        ms = board.in_lane(missionboard.DOING) + board.in_lane(missionboard.POOL)
+        import planner
+        board = planner.load_board()
+        ms = board.in_lane(planner.DOING) + board.in_lane(planner.POOL)
     except Exception:
         return goals
     for m in ms:
@@ -365,8 +365,8 @@ def absorb_replies() -> list[str]:
         _log_absorbed(replies)
     pushed: list[str] = []
     try:
-        import missionboard
-        board = missionboard.load()
+        import planner
+        board = planner.load_board()
     except Exception:
         return pushed
     for rp in replies:
@@ -382,7 +382,7 @@ def absorb_replies() -> list[str]:
         except Exception:
             continue
     try:
-        missionboard.save(board)
+        planner.save_board(board)
     except Exception:
         pass
     return pushed
