@@ -26,6 +26,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import pathlib
+import re
+import shutil
+import subprocess
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
@@ -109,7 +112,249 @@ def parse_env_file(path: pathlib.Path) -> dict[str, str]:
     return out
 
 
-import checkup
+# ── 领地自检(self-check)：原 checkup.py 已并入此处 ───────────────────
+# 照镜子那一层：Python 版本/关键文件/语法/导入/结构/依赖/.env/仓库完整性。
+# 返回 (ok, label, detail) 三元组(与各层渲染器解耦)，复用上面的 parse_env_file
+# 与 NUMERIC_ENV/ENUM_ENV，不再各抄一份。
+VITAL_FILES = ["crab.py", "hands.py", "README.md", "LICENSE",
+               ".env.example", "requirements.txt", ".gitignore"]
+VITAL_DIRS = ["journal", "skills"]
+MIN_PYTHON = (3, 9)
+
+# 运行时读取、但内部/调试用、不必写进 .env.example 的键(故意不对外暴露)。
+INTERNAL_ENV = {"OPENCRAB_DRY_RUN"}
+# 从源码里捞 OPENCRAB_* 配置键 / README 里点名的项目内文件，做完整性校验用。
+_ENV_GET_RE = re.compile(r'os\.environ\.(?:get|setdefault)\(\s*["\'](OPENCRAB_[A-Z_]+)["\']')
+_REF_FILE_RE = re.compile(r'`([A-Za-z0-9_./-]+\.(?:py|md))`')
+
+
+def _sc_ok(label: str, detail: str = "") -> tuple[bool, str, str]:
+    return True, label, detail
+
+
+def _sc_bad(label: str, detail: str = "") -> tuple[bool, str, str]:
+    return False, label, detail
+
+
+def check_python_version() -> list[tuple[bool, str, str]]:
+    """🐍 跑它的 Python 够不够新(语法/标准库的底线)。"""
+    cur = sys.version_info[:3]
+    ver = ".".join(map(str, cur))
+    need = ".".join(map(str, MIN_PYTHON))
+    if cur[:2] < MIN_PYTHON:
+        return [_sc_bad("Python 版本", f"当前 {ver}，需要 ≥ {need} — 修复：装一个更新的 Python(如 pyenv install) 再重跑")]
+    return [_sc_ok("Python 版本", f"{ver}(≥ {need})")]
+
+
+def check_vital_files() -> list[tuple[bool, str, str]]:
+    """🦴 关键文件在不在。"""
+    out = []
+    for name in VITAL_FILES:
+        p = REPO_ROOT / name
+        out.append(_sc_ok(f"文件 {name}", f"{p.stat().st_size} 字节") if p.is_file()
+                   else _sc_bad(f"文件 {name}", "缺失"))
+    return out
+
+
+def check_vital_dirs() -> list[tuple[bool, str, str]]:
+    """🗂️ 领地结构(航海日志 / 技能库)完不完整。"""
+    out = []
+    for name in VITAL_DIRS:
+        p = REPO_ROOT / name
+        out.append(_sc_ok(f"目录 {name}/", f"{len(list(p.glob('*')))} 项") if p.is_dir()
+                   else _sc_bad(f"目录 {name}/", "缺失"))
+    return out
+
+
+def check_python_compiles() -> list[tuple[bool, str, str]]:
+    """🐍 所有 Python 还编不编得过(语法层的命脉)。"""
+    pys = sorted(p.name for p in REPO_ROOT.glob("*.py"))
+    if not pys:
+        return [_sc_bad("Python 文件", "一个都没有")]
+    r = subprocess.run([sys.executable, "-m", "py_compile", *pys],
+                       cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        return [_sc_bad("语法编译", r.stderr.strip()[:200] or "?")]
+    return [_sc_ok("语法编译", f"{len(pys)} 个 .py 全部通过")]
+
+
+def check_main_imports() -> list[tuple[bool, str, str]]:
+    """🧠 主模块(crab / hands)还导不导得入(还能不能启动)。"""
+    out = []
+    for mod in ("crab", "hands"):
+        r = subprocess.run([sys.executable, "-c", f"import {mod}"],
+                           cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60)
+        out.append(_sc_ok(f"导入 {mod}") if r.returncode == 0
+                   else _sc_bad(f"导入 {mod}", r.stderr.strip().splitlines()[-1][:160] if r.stderr.strip() else "?"))
+    return out
+
+
+def check_dependencies() -> list[tuple[bool, str, str]]:
+    """📦 关键依赖：本体零第三方(只验证仍如此)，外加它的「手」用的 CLI 在不在。"""
+    out: list[tuple[bool, str, str]] = []
+    reqs = REPO_ROOT / "requirements.txt"
+    pkgs: list[str] = []
+    if reqs.is_file():
+        for line in reqs.read_text("utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                pkgs.append(line)
+    if pkgs:
+        missing = [p for p in pkgs if _module_missing(p)]
+        out.append(_sc_ok("第三方依赖", f"requirements.txt 列了 {len(pkgs)} 项") if not missing
+                   else _sc_bad("第三方依赖", f"未安装：{', '.join(missing)} — 修复：pip install -r requirements.txt"))
+    else:
+        out.append(_sc_ok("第三方依赖", "零第三方(requirements.txt 为空，符合设计)"))
+
+    env = parse_env_file(REPO_ROOT / ".env")
+    executor = env.get("OPENCRAB_EXECUTOR", "claude")
+    where = shutil.which(executor)
+    if where:
+        out.append(_sc_ok(f"手·{executor} CLI", where))
+    else:
+        out.append(_sc_ok(f"手·{executor} CLI",
+                          f"未找到(仅 journal/梦境模式无妨；要动手请先装好 {executor} 并加入 PATH)"))
+    return out
+
+
+def _module_missing(req: str) -> bool:
+    """粗略判断 requirements 里某行对应的包能不能 import(只取包名部分)。"""
+    import importlib.util
+    name = req.split("==")[0].split(">=")[0].split("<")[0].split("[")[0].strip()
+    name = name.replace("-", "_")
+    try:
+        return importlib.util.find_spec(name) is None
+    except Exception:
+        return True
+
+
+def check_env_config() -> list[tuple[bool, str, str]]:
+    """🔑 .env 配置齐不齐、填得对不对(结构性错误才算未过，没填 key=梦境模式 不算)。"""
+    env_path = REPO_ROOT / ".env"
+    example_path = REPO_ROOT / ".env.example"
+    if not env_path.is_file():
+        return [_sc_ok(".env 配置",
+                       "无 .env，梦境模式运行 — 接大脑请：cp .env.example .env 后填 OPENCRAB_API_KEY")]
+
+    env = parse_env_file(env_path)
+    out: list[tuple[bool, str, str]] = []
+
+    if example_path.is_file():
+        expected = set(parse_env_file(example_path))
+        missing = sorted(expected - set(env))
+        out.append(_sc_ok(".env 键齐全", f"{len(expected)} 项齐全") if not missing
+                   else _sc_bad(".env 键齐全",
+                                f"缺 {', '.join(missing)} — 修复：参照 .env.example 补上这些键"))
+
+    bad_num = []
+    for key, parser in NUMERIC_ENV.items():
+        raw = env.get(key, "")
+        if raw == "":
+            continue
+        try:
+            parser(raw)
+        except ValueError:
+            bad_num.append(f"{key}={raw!r}")
+    if bad_num:
+        out.append(_sc_bad(".env 数值", f"无法解析：{'; '.join(bad_num)} — 修复：改成合法数字"))
+
+    bad_enum = []
+    for key, allowed in ENUM_ENV.items():
+        raw = env.get(key, "")
+        if raw and raw not in allowed:
+            bad_enum.append(f"{key}={raw!r}(可选：{'/'.join(sorted(allowed))})")
+    if bad_enum:
+        out.append(_sc_bad(".env 取值", f"非法：{'; '.join(bad_enum)} — 修复：改成括号内可选值之一"))
+
+    if env.get("OPENCRAB_API_KEY", "").strip():
+        out.append(_sc_ok(".env 大脑", "OPENCRAB_API_KEY 已填"))
+    else:
+        out.append(_sc_ok(".env 大脑", "OPENCRAB_API_KEY 为空 — 梦境模式(想接真大脑就填上)"))
+
+    if not any(label.startswith(".env 数值") or label.startswith(".env 取值")
+               for ok, label, _ in out if not ok):
+        out.append(_sc_ok(".env 数值与取值", "数字/枚举项均合法"))
+    return out
+
+
+def _read_env_keys_from_source(*names: str) -> set[str]:
+    """从给定源码文件里捞出所有被读取的 OPENCRAB_* 配置键。"""
+    keys: set[str] = set()
+    for name in names:
+        p = REPO_ROOT / name
+        if p.is_file():
+            keys.update(_ENV_GET_RE.findall(p.read_text("utf-8")))
+    return keys
+
+
+def check_repo_integrity() -> list[tuple[bool, str, str]]:
+    """🧩 仓库完整性：README/配置/脚本三者还互相对得上吗(防「长歪了」)。"""
+    out: list[tuple[bool, str, str]] = []
+
+    readme = REPO_ROOT / "README.md"
+    if readme.is_file():
+        refs = sorted(set(_REF_FILE_RE.findall(readme.read_text("utf-8"))))
+        missing = [r for r in refs if not (REPO_ROOT / r).exists()]
+        out.append(_sc_ok("README 引用", f"提到的 {len(refs)} 个文件都在")
+                   if not missing else
+                   _sc_bad("README 引用",
+                           f"提到却不存在：{', '.join(missing)} — 修复：补上文件，或从 README 删掉这些引用"))
+
+    example = REPO_ROOT / ".env.example"
+    if example.is_file():
+        documented = set(parse_env_file(example))
+        used = _read_env_keys_from_source("crab.py", "hands.py")
+        undocumented = sorted(used - documented - INTERNAL_ENV)
+        out.append(_sc_ok("配置文档同步", f"代码读取的 {len(used - INTERNAL_ENV)} 个键都在 .env.example 里")
+                   if not undocumented else
+                   _sc_bad("配置文档同步",
+                           f"代码读取却没写进 .env.example：{', '.join(undocumented)} — "
+                           f"修复：在 .env.example 补上这些键(或加进 health 的 INTERNAL_ENV 表示故意内部用)"))
+
+        validated = set(NUMERIC_ENV) | set(ENUM_ENV)
+        stale = sorted(validated - documented)
+        out.append(_sc_ok("校验表对齐", f"自检校验的 {len(validated)} 个键都在 .env.example 里")
+                   if not stale else
+                   _sc_bad("校验表对齐",
+                           f"自检在校验 .env.example 里没有的键：{', '.join(stale)} — "
+                           f"修复：让 NUMERIC_ENV/ENUM_ENV 与 .env.example 对齐"))
+
+    return out
+
+
+def check_git_clean() -> list[tuple[bool, str, str]]:
+    """🌿 当前分支与工作区状态(只读，永远算通过——只是照给自己看)。"""
+    try:
+        branch = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse",
+                                 "--abbrev-ref", "HEAD"],
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(REPO_ROOT), "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        return [_sc_ok("git 状态", "(不在 git 仓库里，跳过)")]
+    n = len(dirty.splitlines()) if dirty else 0
+    detail = f"分支 {branch or '?'}" + (f" · {n} 处未提交改动" if n else " · 工作区干净")
+    return [_sc_ok("git 状态", detail)]
+
+
+SELF_CHECKS = [check_python_version, check_vital_files, check_vital_dirs,
+               check_python_compiles, check_main_imports,
+               check_dependencies, check_env_config,
+               check_repo_integrity, check_git_clean]
+
+
+def self_check_run() -> tuple[bool, list[tuple[bool, str, str]]]:
+    """跑完所有领地自检项，返回 (是否全过, 明细)。原 checkup.run()。"""
+    results: list[tuple[bool, str, str]] = []
+    for chk in SELF_CHECKS:
+        try:
+            results.extend(chk())
+        except Exception as e:        # 自检自己出错也不该弄死镜子
+            results.append(_sc_bad(chk.__name__, f"自检异常：{e}"))
+    healthy = all(ok for ok, _, _ in results)
+    return healthy, results
+
+
 import envcheck
 import probe
 import smoke
