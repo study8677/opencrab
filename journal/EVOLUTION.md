@@ -1500,3 +1500,9 @@
 - 意图：今天推进 `experiments.py`：登记自改假设、指标、对照与停止条件，跑后判定学到了什么。  
 - 变化：
   - 主干 HEAD 946c988→d7ca010
+
+## 2026-05-25T17:27:17 · 8ae48ec
+- 意图：今天推进 `schemas.py`：为 audit/memory/experiment 等 JSONL 记录声明版本化 
+- 变化：
+  - 航海日志 181→182（+1）
+  - 主干 HEAD d7ca010→8ae48ec
