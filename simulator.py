@@ -743,6 +743,20 @@ def _cmd_recent(n: int = 10) -> None:
         print(f"  {ts}  {goal}  ({len(sbs)} 条方案){tag}")
 
 
+def _cmd_recent_rounds(n: int = 10) -> None:
+    rows = recent_rounds(n)
+    if not rows:
+        print("🥊  还没有落档的比赛（给我一个目标加 --arena、或用 arena(...) 后再来看）。")
+        return
+    print(f"🥊  最近 {len(rows)} 场比赛：")
+    for r in rows:
+        ts = str(r.get("at", ""))[-8:]
+        goal = str(r.get("goal", ""))[:36]
+        ps = r.get("proposals") or []
+        win = r.get("winner") or "—"
+        print(f"  {ts}  {goal}  ({len(ps)} 派同场 → 胜出「{win}」)")
+
+
 def main(argv: list | None = None) -> None:
     ap = argparse.ArgumentParser(
         prog="simulator.py",
@@ -753,16 +767,45 @@ def main(argv: list | None = None) -> None:
                     help="一条方案：名号|做法|新模块数|预计行数|有自测(y/n)|可逆(y/n)")
     ap.add_argument("--constraint", action="append", default=[],
                     help="一条硬约束（可多次），如「纯标准库」「别碰 crab.py」")
+    ap.add_argument("--arena", action="store_true",
+                    help="🥊 多策略竞技：把同一目标交给 2~3 派进化策略并行出方案后择优（原 arena.py）")
+    ap.add_argument("--strategy", default="",
+                    help=f"竞技场里只让指定派上场（逗号分隔，可选 {'/'.join(_STRATEGIES)}；默认全上）")
+    ap.add_argument("--kickoff", action="store_true",
+                    help="竞技场择优后把胜出方案直接交给 planner 起一份计划（把竞技结果落成行动）")
     ap.add_argument("--recent", action="store_true", help="回看最近落档的推演后退出")
+    ap.add_argument("--recent-rounds", action="store_true",
+                    help="回看最近落档的竞技比赛后退出")
     args = ap.parse_args(argv)
 
     if args.recent:
         _cmd_recent()
         return
+    if args.recent_rounds:
+        _cmd_recent_rounds()
+        return
 
     goal = " ".join(args.goal)
     if not goal:
-        ap.error("请给一个目标描述（或用 --recent）")
+        ap.error("请给一个目标描述（或用 --recent / --recent-rounds）")
+
+    # 竞技场分支：多策略并行出方案、对比证据/分歧/预期收益后择优（原 arena.py 的入口）。
+    if args.arena or args.strategy or args.kickoff:
+        names = [s.strip() for s in args.strategy.split(",") if s.strip()] or None
+        if names:
+            bad = [s for s in names if s not in _STRATEGIES]
+            if bad:
+                ap.error(f"未知策略 {bad}；可选：{'/'.join(_STRATEGIES)}")
+        if args.kickoff:
+            out = kickoff(goal, names, args.constraint)
+            if out.get("ok"):
+                print(f"🥊  已择优并发起：planner 已就「{out['winner']}」的主张起了一份 {out['steps']} 步的计划。")
+                print("    用 `python planner.py --show` 看路线。")
+            else:
+                print(f"🥊  没能发起：{out.get('reason', '未知原因')}")
+            return
+        print(arena(goal, names, args.constraint).render())
+        return
 
     sandboxes = [_parse_sandbox(s) for s in args.sandbox] or None
     if not sandboxes:
