@@ -1412,3 +1412,9 @@
 - 意图：今天推进 `threatmodel.py`：自改前扫描 diff 的密钥泄露、危险命令、越权文件与网络风险，给出阻断/缓
 - 变化：
   - 主干 HEAD f55509b→5aa2f72
+
+## 2026-05-25T17:19:17 · da44f76
+- 意图：今天推进 `schema.py`：为 audit/memory/experiment 等 JSONL 定义版本化 Sch
+- 变化：
+  - 航海日志 173→174（+1）
+  - 主干 HEAD 5aa2f72→da44f76
