@@ -296,7 +296,7 @@ def _run_path() -> Layer:
         if st.name in v.diffs:
             lines.append(f"       ↳ 指纹漂移：{v.diffs[st.name]}")
     if v.missing_golden:
-        summary = "还没有黄金指纹(先跑 python goldenpath.py --update)"
+        summary = "还没有黄金指纹(先跑 python regression.py path --update)"
         # 链已跑断时按未过收尾；仅缺指纹但链通畅，视作「待录」也算未过。
         ok = False
     elif v.ok:
