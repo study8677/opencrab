@@ -766,10 +766,25 @@ def main(argv: list | None = None) -> None:
     ap.add_argument("--look", metavar="QUERY",
                     help="只眺望 GitHub 仓库（名字 ★star 简介），不提炼")
     ap.add_argument("--recent", action="store_true", help="回看最近攒下的招式卡后退出")
+    # ── 需求信号市场(原 market.py，已并入)──
+    ap.add_argument("--market", action="store_true",
+                    help="📡 需求信号市场：收 issue/PR/README/提交讨论聚出外界真实需求并按行情定价")
+    ap.add_argument("--harvest", action="store_true",
+                    help="(配合 --market)重收外部声音、刷新行情后打印")
+    ap.add_argument("--no-fetch", action="store_true",
+                    help="(配合 --market)不调外部井，仅就已存行情重新打印")
+    ap.add_argument("--top", type=int, default=None, metavar="N",
+                    help="(配合 --market)只看出价最高的 N 条信号")
+    ap.add_argument("--seed", action="store_true",
+                    help="(配合 --market)把头部需求软推进 missionboard 机会池")
     args = ap.parse_args(argv)
 
     if args.recent:
         _cmd_recent()
+        return
+
+    if args.market:
+        _cmd_market(args)
         return
 
     if args.look:
