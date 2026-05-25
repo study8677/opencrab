@@ -107,6 +107,16 @@ def git(args: str) -> str:
 
 
 # ── 大脑(urllib 直连任何 OpenAI 兼容端点)─────────────────────────────
+# 大脑没想出东西时的统一前缀(401/网络抖动等)：用它识别「这次没真的想」，
+# 别把降级占位符当成真意图去动手、写日志、留提交。
+THINK_FAILED_PREFIX = "(这次没想清楚："
+
+
+def _brain_failed(text: str) -> bool:
+    """这段文本是不是大脑降级的占位符(没真的想出意图)？"""
+    return text.startswith(THINK_FAILED_PREFIX)
+
+
 def brain(system: str, prompt: str) -> tuple[str, int]:
     """调用大脑，返回 (文本, 消耗的体力/token)。
     无 key -> 梦境模式；出错 -> 降级，绝不让一次抖动弄死这只生命。
@@ -130,10 +140,10 @@ def brain(system: str, prompt: str) -> tuple[str, int]:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         log(f"⚠️  大脑被拒({e.code})：{e.read()[:160]!r}")
-        return f"(这次没想清楚：大脑返回 {e.code})", 0
+        return f"{THINK_FAILED_PREFIX}大脑返回 {e.code})", 0
     except Exception as e:
         log(f"⚠️  够不到大脑：{e}")
-        return "(这次没想清楚：暂时够不到大脑)", 0
+        return f"{THINK_FAILED_PREFIX}暂时够不到大脑)", 0
     text = (data["choices"][0]["message"].get("content") or "").strip()
     tokens = (data.get("usage") or {}).get("total_tokens") or max(1, len(text) // 3)
     return text, tokens
@@ -365,6 +375,16 @@ def tick() -> bool:
     recent = "\n".join("- " + i["text"].split("\n")[0][:100] for i in state["intents"][-5:])
     intent, spent = form_intent(territory, recent)
     state["energy_spent_today"] += spent
+
+    # 🧠 大脑这次没真的想出来(401/网络抖动)：原地歇着，绝不拿占位符去动手、
+    # 写日志、留提交——那只会往领地里灌噪声(见历史上几次空进化提交)。
+    if _brain_failed(intent):
+        log(f"😶 大脑没想出意图({intent})，这次心跳不动手，缩回壳里等它醒。")
+        save_state(state)
+        audit.record("tick_skip", tick=state["ticks"] + 1, reason="brain_failed",
+                     intent=intent.split("\n")[0][:160])
+        return False
+
     log("❤️  生成意图")
     log(textwrap.indent(intent, "     "))
     audit.record("intent", text=intent.split("\n")[0][:160],
