@@ -46,42 +46,199 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent
 _ARENA_DIR = _REPO_ROOT / "state" / "arena"         # 落在被 .gitignore 的 state/ 里
 _ROUNDS = _ARENA_DIR / "rounds.jsonl"               # 每场比赛的快照(可回看)
 
-# 演化试验场是一条链路：沙盘(simulator)是评估「脑子」，竞技场补多方案竞争。
-# 要害清单与巨改/失控阈值一律以沙盘为单一来源，竞技场不再各留一份；沙盘缺席才本地兜底，
-# 绝不因 import 失败而崩。
+_PREVIEWS = _ARENA_DIR / "previews.jsonl"           # 单脑预演(沙盘)的快照(可回看)
+
+# 演化试验场原是两个模块：沙盘(simulator)是「单脑预演」的评估脑子，竞技场(arena)在其上做
+# 多策略竞争。两者重叠太多——同一套要害清单/阈值、同一套 jsonl 落地、竞技场的每份方案最终
+# 还得回头借沙盘的 appraise 打分。现把沙盘整个并进竞技场：评估脑子(Sandbox/appraise)与多派
+# 竞争同住一处，少一个重叠模块、决策链更直。要害清单软对齐 judge，拿不到就本地兜底。
 try:
-    from simulator import (_VITAL, _BIG_LINES, _WIDE_FILES,   # type: ignore
-                           append_snapshot as _append_snapshot,
-                           read_snapshots as _read_snapshots)
+    from judge import _VITAL as _VITAL              # type: ignore
 except Exception:                                   # pragma: no cover
     _VITAL = {"crab.py", "hands.py", "checkup.py", "audit.py",
               "capabilities/__init__.py"}
-    _BIG_LINES, _WIDE_FILES = 400, 12
 
-    # 沙盘缺席的本地兜底：自带一套等价的 jsonl 落地/回看，绝不因 import 失败而崩。
-    def _append_snapshot(path: pathlib.Path, payload: dict) -> None:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-
-    def _read_snapshots(path: pathlib.Path, limit: int = 10) -> list:
-        if not path.exists():
-            return []
-        out: list = []
-        for line in path.read_text("utf-8", errors="ignore").splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    out.append(json.loads(line))
-                except Exception:
-                    continue
-        return out[-limit:] if limit else out
+_BIG_LINES = 400        # 单方案「巨改」阈值：超过就按高复审成本+回归面算
+_WIDE_FILES = 12        # 改动面「失控」阈值：碰这么多文件多半一次想干太多
 
 _EVIDENCE_CAP = 2       # 单份方案证据加减分的封顶，免得证据压过沙盘本身的净收益
 _CLOSE_MARGIN = 1       # 冠亚军预期收益差 ≤ 此值即判「势均力敌」
+
+
+# ── 共享的快照落地/回看（预演与竞技同用一套，绝不各写一份） ───────────
+def _append_snapshot(path: pathlib.Path, payload: dict) -> None:
+    """把一份快照追加到 path（自动建父目录）；写入异常一律吞掉，绝不反噬。"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _read_snapshots(path: pathlib.Path, limit: int = 10) -> list:
+    """读出 path 里最近 limit 条快照(时间正序)；文件缺失或坏行都从容跳过。"""
+    if not path.exists():
+        return []
+    out: list = []
+    for line in path.read_text("utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            continue
+    return out[-limit:] if limit else out
+
+
+# 软引入 memory 的回放，向后兼容由 append_snapshot/read_snapshots 暴露给同仓老调用方。
+append_snapshot = _append_snapshot
+read_snapshots = _read_snapshots
+
+
+def _recall_warning(text: str, k: int = 2) -> str:
+    """软引入 memory：这类目标以前若栽过，返回一句预警；缺/错则返回空串。"""
+    try:
+        import memory
+        for s, ep in memory.recall(text, k=k):
+            if not ep.ok and s >= 0.5:
+                return f"记忆里同类目标栽过：{ep.headline()}"
+    except Exception:
+        pass
+    return ""
+
+
+# ── 单脑预演：一条演化方案（一格沙盘） ──────────────────────────────
+@dataclasses.dataclass
+class Sandbox:
+    """一条可推演的演化方案：先描述「打算怎么改」，再据此推出收益/风险/成本/失败链。"""
+    name: str                                   # 方案名号(保守/稳健/激进…)
+    approach: str = ""                          # 这条路具体怎么做(人话)
+    new_modules: int = 0                        # 预计新长出几个模块
+    est_lines: int = 0                          # 预计写/改多少行
+    touches: list = dataclasses.field(default_factory=list)  # 预计要碰的文件
+    has_selftest: bool = True                   # 这条路打算补自测吗
+    reversible: bool = True                     # 翻车了好不好退回(可逆性)
+
+    # —— 推演产物(由 appraise 填) ——
+    benefit: int = 0
+    risk: int = 0
+    cost: int = 0
+    failure_chain: list = dataclasses.field(default_factory=list)
+    reasons: list = dataclasses.field(default_factory=list)
+    violations: list = dataclasses.field(default_factory=list)
+
+    @property
+    def net(self) -> int:
+        """净收益 = 收益 − 风险 − 成本。预演据此排「先走哪条」。"""
+        return self.benefit - self.risk - self.cost
+
+    def touches_vital(self) -> list:
+        """这条路预计碰到的要害器官(规范成正斜杠路径再比对)。"""
+        return sorted(f for f in self.touches
+                      if f.replace("\\", "/") in _VITAL)
+
+    def to_dict(self) -> dict:
+        d = dataclasses.asdict(self)
+        d["net"] = self.net
+        return d
+
+
+def appraise(sb: Sandbox, *, goal: str = "", constraints: list | None = None,
+             memory_warn: str = "") -> Sandbox:
+    """对一条方案沿收益/风险/成本三维推演，并把可能的失败链摊出来——竞技场的评估脑子。
+
+    保守倾向：信息不足(没自测、不可逆、记忆里栽过)时宁可把风险算重，也绝不在
+    事前替一条没兜底的路打包票。就地改写 sb 的推演字段并返回它，便于链式调用。
+    """
+    constraints = constraints or []
+    benefit = risk = cost = 0
+    reasons: list = []
+    chain: list = []
+
+    # ① 收益：长出新本事最值钱，纯打磨给半分认可
+    if sb.new_modules > 0:
+        benefit += 2 * sb.new_modules
+        reasons.append(f"预计长出 {sb.new_modules} 个新模块（收益 +{2 * sb.new_modules}）")
+    elif sb.est_lines > 0:
+        benefit += 1
+        reasons.append("没有新模块，算打磨现有能力（收益 +1）")
+
+    # ② 成本：行数与改动面——复审与回归的代价
+    cost += sb.est_lines // 150
+    if sb.est_lines >= _BIG_LINES:
+        cost += 1
+        reasons.append(f"预计 {sb.est_lines} 行，巨改、复审成本高（成本 +{sb.est_lines // 150 + 1}）")
+    elif sb.est_lines:
+        reasons.append(f"预计 {sb.est_lines} 行（成本 +{sb.est_lines // 150}）")
+    if len(sb.touches) >= _WIDE_FILES:
+        cost += 1
+        reasons.append(f"要碰 {len(sb.touches)} 个文件，面太宽（成本 +1）")
+
+    # ③ 风险：碰要害 / 不可逆 / 没自测 / 记忆里栽过——逐项加码，并接进失败链
+    vital = sb.touches_vital()
+    if vital:
+        risk += 2
+        reasons.append(f"要动要害器官 {', '.join(vital)}（风险 +2）")
+        chain.append(f"动了要害器官 {', '.join(vital)}")
+    if not sb.has_selftest:
+        risk += 2
+        reasons.append("不打算补自测，改动没人兜（风险 +2）")
+        chain.append("没有自测兜底 → 回归不会被当场发现")
+    if not sb.reversible:
+        risk += 1
+        reasons.append("这条路不易回退，翻车代价大（风险 +1）")
+    if sb.est_lines >= _BIG_LINES:
+        risk += 1
+        chain.append(f"一口气 {sb.est_lines} 行 → 复审遗漏 → 藏着隐患进主干")
+    if memory_warn:
+        risk += 1
+        reasons.append(f"记忆预警：{memory_warn}（风险 +1）")
+        chain.append(f"重蹈覆辙：{memory_warn}")
+
+    # 失败链收尾：把上面的「松动环」串成一句最坏情形
+    if chain:
+        tail = ("难回退、只能硬扛" if not sb.reversible else "退回分支重来")
+        chain.append(f"最坏：净亏被裁决官打回 → {tail}")
+    else:
+        chain.append("没有明显的连环失败点——这条路就算栽也栽得轻。")
+
+    # ④ 约束体检：逐条对照硬约束，违反的拎出来(违约本身不改分，但会压低建议)
+    violations = _check_constraints(sb, constraints)
+    if violations:
+        reasons.append(f"踩了 {len(violations)} 条硬约束（见下）")
+
+    sb.benefit, sb.risk, sb.cost = benefit, risk, cost
+    sb.failure_chain = chain
+    sb.reasons = reasons
+    sb.violations = violations
+    return sb
+
+
+def _check_constraints(sb: Sandbox, constraints: list) -> list:
+    """把方案对照每条硬约束体检，返回被踩中的约束(人话)；纯字符串启发式，宁缺毋滥。"""
+    hits: list = []
+    blob = f"{sb.name} {sb.approach} {' '.join(sb.touches)}".lower()
+    for c in constraints:
+        c = (c or "").strip()
+        if not c:
+            continue
+        low = c.lower()
+        # 「别碰 X / 不要改 X / 禁止 X」式禁令：方案若正打算碰 X，就算踩线
+        for kw in ("别碰", "不要碰", "不要改", "不准", "禁止", "勿动", "don't touch", "no "):
+            if kw in low:
+                target = low.split(kw, 1)[1].strip(" 　：:。.")
+                if target and (target in blob
+                               or any(target in t.lower() for t in sb.touches)):
+                    hits.append(f"违反「{c}」：方案正打算碰它")
+                break
+        else:
+            # 「纯标准库 / 零依赖」式戒律：方案若自述要引第三方就算踩线
+            if ("标准库" in low or "零依赖" in low or "no dep" in low) and \
+               any(w in blob for w in ("pip", "依赖", "第三方", "install", "requirements")):
+                hits.append(f"违反「{c}」：方案似乎要引第三方依赖")
+    return hits
 
 
 # ── 一条证据（从记忆/招式井打上来，供各派引用） ─────────────────────
@@ -248,22 +405,15 @@ def weigh(p: Proposal, *, goal: str = "", constraints: list | None = None) -> Pr
 
 
 def _appraise(p: Proposal, *, goal: str, constraints: list, memory_warn: str) -> None:
-    """统一借 simulator 的沙盘脑子打分——收益/风险/成本只此一套口径，竞技场不再另算。
-    沙盘是同仓的姊妹模块、几乎总在；万一真打不上来，就把这份方案标成「未推演」(收益0)
-    而非偷偷换一套本地公式，宁可少给信号也绝不让两套评分悄悄分叉。"""
-    try:
-        import simulator
-        sb = simulator.Sandbox(
-            name=p.title, approach=p.approach, new_modules=p.new_modules,
-            est_lines=p.est_lines, touches=list(p.touches),
-            has_selftest=p.has_selftest, reversible=p.reversible)
-        simulator.appraise(sb, goal=goal, constraints=constraints, memory_warn=memory_warn)
-        p.benefit, p.risk, p.cost = sb.benefit, sb.risk, sb.cost
-        p.failure_chain, p.reasons, p.violations = sb.failure_chain, sb.reasons, sb.violations
-    except Exception as e:                          # pragma: no cover
-        p.benefit = p.risk = p.cost = 0
-        p.reasons = [f"沙盘没接上（{e}），这份方案未推演"]
-        p.failure_chain = ["沙盘缺席 → 无评分，别凭它择优"]
+    """过本模块自带的沙盘脑子(appraise)打分——收益/风险/成本只此一套口径，竞技场不再另算。
+    沙盘与竞技同住一处，不再隔模块 import；既单一来源，又少一层缺席兜底。"""
+    sb = Sandbox(
+        name=p.title, approach=p.approach, new_modules=p.new_modules,
+        est_lines=p.est_lines, touches=list(p.touches),
+        has_selftest=p.has_selftest, reversible=p.reversible)
+    appraise(sb, goal=goal, constraints=constraints, memory_warn=memory_warn)
+    p.benefit, p.risk, p.cost = sb.benefit, sb.risk, sb.cost
+    p.failure_chain, p.reasons, p.violations = sb.failure_chain, sb.reasons, sb.violations
 
 
 # ── 一场比赛：同一目标下各派的竞争 ──────────────────────────────────
