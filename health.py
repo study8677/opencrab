@@ -691,6 +691,17 @@ def _run_smoke(strict: bool) -> Layer:
     return Layer("smoke", "🔥 README 烟雾测试", report.ok, summary, detail)
 
 
+def _run_contracts(strict: bool) -> Layer:
+    import contracts as cap_contracts
+    verdicts = cap_contracts.verify()
+    healthy, broken = cap_contracts.summarize(verdicts)
+    summary = (f"{len(verdicts)} 条契约守约" if healthy else f"{broken} 条违约")
+    detail = "\n".join(
+        f"  {'✅' if v.ok else '❌'} {v.module}" + (f" — 违约：{v.detail}" if not v.ok else "")
+        for v in verdicts)
+    return Layer("contracts", "📜 模块契约", healthy, summary, detail)
+
+
 def _finding_line(f) -> str:
     """把 probe/envcheck 的 Finding 渲染成一行(含修复建议)。"""
     line = f"  {_MARK[f.level]} {f.label}" + (f" — {f.detail}" if f.detail else "")
@@ -704,9 +715,11 @@ LAYERS = {
     "probe": _run_probe,
     "env": _run_envcheck,
     "checkup": _run_checkup,
+    "contracts": _run_contracts,
     "smoke": _run_smoke,
 }
-ORDER = ["probe", "env", "checkup", "smoke"]
+# 由底向上：跑得起来(probe) → 配置对(env) → 结构健(checkup) → 边界守约(contracts) → 文档真(smoke)。
+ORDER = ["probe", "env", "checkup", "contracts", "smoke"]
 
 
 def run(keys: list[str] | None = None, *, strict: bool = False) -> list[Layer]:
