@@ -127,12 +127,14 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
                 "note": f"[未找到 {executor} CLI] 本应在分支 {branch} 上（{integrate} 模式）实施：{task[:70]}"}
 
     _git(repo, "checkout", "-f", base)   # 先强制回主干：确保从 main 开枝、改完也回 main，不在 crab 分支上越积越偏
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()   # 开枝前 base 的 HEAD：补丁解释层据此算回滚点
     if _git(repo, "checkout", "-b", branch).returncode != 0:
         return {"ok": False, "branch": branch, "changed": False,
                 "integrate": integrate, "note": "开分支失败(可能重名)。"}
 
     result = {"branch": branch, "base": base, "executor": executor,
-              "integrate": integrate, "changed": False, "ok": False}
+              "integrate": integrate, "changed": False, "ok": False,
+              "task": task, "base_sha": base_sha}   # task/base_sha 供 patchnote 写「依据」与「回滚点」
     try:
         # 1) 雇佣爪子改文件：只给「改文件」最小权限，不碰 git / Bash / 联网
         cmd = _plan_cmd(task, executor, budget_usd)  # 与预演看到的命令完全一致
@@ -149,6 +151,8 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
         result["changed"] = True
         _git(repo, "commit", "-m", f"🦀 self-evolve: {task[:60]}",
              "-m", "opencrab 自主提出并实施。")
+
+        result["patch_sha"] = _git(repo, "rev-parse", "HEAD").stdout.strip()  # 分支上这条提交：回滚点之一
 
         if integrate == "branch":
             result["ok"] = True
@@ -172,6 +176,7 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
             _git(repo, "merge", "--abort")
             result["note"] = "合并冲突 → 已放弃，改动留在分支。"
             return result
+        result["merge_sha"] = _git(repo, "rev-parse", "HEAD").stdout.strip()  # 合并提交：publish/merge 的回滚点
         _git(repo, "branch", "-D", branch)
 
         if integrate == "publish":              # 公开大海：推向全世界
@@ -191,9 +196,14 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
 
 
 def _feedback(result: dict) -> None:
-    """把这次动手的结果回灌给证据账本与能力图谱(尽力而为，绝不反噬动手)。"""
+    """把这次动手的结果回灌给证据账本/能力图谱，并落一条可审的补丁说明(尽力而为，绝不反噬动手)。"""
     try:
         import handsfeedback
         handsfeedback.feed(result)
     except Exception:   # noqa: BLE001 —— 回灌是副产物，缺席/出错都不该拖垮手
+        pass
+    try:
+        import patchnote
+        patchnote.explain(result)   # 落笔即写下依据/契约影响/回滚点，让每一爪可审
+    except Exception:   # noqa: BLE001 —— 解释同为副产物，出错绝不拖垮动手
         pass

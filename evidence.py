@@ -104,6 +104,15 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="patchnote",
+        # 每爪落笔时同步写下「依据/契约影响/回滚点」，让动手可审可追责。
+        # 复跑命令验证这条解释管子本身还稳：三种 integrate 模式的退路都能正确分流。
+        asserts="自生手每落一爪都能同步写出依据、契约影响与可跑的回滚点",
+        argv=_PY + ["patchnote.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 
