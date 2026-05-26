@@ -153,6 +153,16 @@ CLAIMS: list[Claim] = [
         risk=2.0,
     ),
     Claim(
+        name="patchfitroom",
+        # brain 补丁试衣间:候选补丁绝不直接写真文件,先穿到隔离临时副本上过 语法/import/契约 三闸,
+        # 四闸全过才原子写回,没过则真文件分毫不动。复跑命令验证过闸写回成立、四道闸各能拒收、
+        # 且每次拒收后真文件确实没被碰过——一只会动手的爪子,第一要务是先学会不伤到自己。
+        asserts="brain 补丁先在临时副本过语法/import/契约三闸,过闸才原子写回,没过则真文件分毫不动",
+        argv=_PY + ["patchfitroom.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
+    Claim(
         name="readpack",
         # 自生手读码上下文包:改码前围着 astlocator 定位到的那一段,自动汇总目标本体/调用方/
         # 契约/近邻测试四样。复跑命令验证四个断面都汇准、定不到位与畸形源码都老实回「读不出」——
