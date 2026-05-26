@@ -152,6 +152,16 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="readpack",
+        # 自生手读码上下文包:改码前围着 astlocator 定位到的那一段,自动汇总目标本体/调用方/
+        # 契约/近邻测试四样。复跑命令验证四个断面都汇准、定不到位与畸形源码都老实回「读不出」——
+        # 亲手写代码的第二步是先读懂下刀处的上下文,看清边界再落笔。
+        asserts="改码前能围着下刀处汇准目标签名/调用方/契约/近邻测试,看懂边界再落笔",
+        argv=_PY + ["readpack.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 
