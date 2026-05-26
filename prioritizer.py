@@ -216,6 +216,51 @@ def _risk_signal(candidate: dict, risk_idx: dict) -> Signal:
     return Signal(0.0, f"`{path or '—'}` 供应链扫描干净").clamp()
 
 
+# ── 📐 校准回路：让权重听校准账本的，而不是我临场拍 ────────────────────
+def calibration_hint() -> dict:
+    """读 calibration 的系统性倾向，给一条**不落盘、非强制**的调权建议。
+
+    四维里 `feedback`(外界点名)是「会结真收益而非泡沫」最可靠的代理。若校准账本显示
+    我系统性**高估收益**(gain_bias<0,总画大饼)，说明自我臆想的收益不可信，应把权重再
+    往 feedback 挪；若系统性**低估**(其实可以更敢做)，则不必再加码 feedback。账本为空
+    或读不到时返回中性建议——绝不反噬排序本身(rank 仍用既定 WEIGHTS)。
+    """
+    try:
+        import calibration
+        b = calibration.bias(calibration.load())
+    except Exception:
+        return {"settled": 0, "gain_bias": None, "suggest": None,
+                "reason": "校准账本不可用——权重维持既定值，等账本攒够已裁定计划再回看。"}
+    if not b.settled or b.gain_bias is None:
+        return {"settled": b.settled, "gain_bias": b.gain_bias, "suggest": None,
+                "reason": "校准账本还没有已裁定计划——先去 settle，零点偏移才量得出。"}
+    if b.gain_bias < -0.5:
+        sug = dict(WEIGHTS); sug["feedback"] = round(sug["feedback"] + 0.05, 2)
+        sug["gap"] = round(sug["gap"] - 0.05, 2)
+        reason = (f"账本显示系统性高估收益({b.gain_bias:+.1f}，总画大饼)——自我臆想的收益不可信，"
+                  f"建议把 0.05 从 gap 挪给 feedback(外界点名更兑现)。")
+    elif b.gain_bias > 0.5:
+        sug = None
+        reason = (f"账本显示系统性低估收益({b.gain_bias:+.1f}，其实可以更敢做)——"
+                  f"feedback 已够重，无需再加码；维持既定权重。")
+    else:
+        sug = None
+        reason = f"收益估得挺准({b.gain_bias:+.1f})——权重无需因校准而动。"
+    return {"settled": b.settled, "gain_bias": round(b.gain_bias, 3),
+            "suggest": sug, "reason": reason}
+
+
+def _print_calibration_hint() -> None:
+    h = calibration_hint()
+    print("🦀📐 校准回路 · 排序权重该不该动")
+    print(f"   当前权重：{WEIGHTS}")
+    print(f"   已裁定计划 {h['settled']} 个；{h['reason']}")
+    if h.get("suggest"):
+        print(f"   👉 建议权重：{h['suggest']}（非强制——改不改由我拍板，rank 仍用既定值）")
+    else:
+        print("   👉 维持既定权重，不改。")
+
+
 # ── 合成排序 ─────────────────────────────────────────────────────────
 def _gather_candidates(window: int) -> list[dict]:
     """候选交给 compass：把三航道的候选摊平成一个列表。compass 不可用则空。"""
@@ -290,10 +335,15 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--top", type=int, default=None, metavar="N",
                     help="只看最该先动的前 N 个（默认全列）")
     ap.add_argument("--json", action="store_true", help="机读：导成 JSON")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="读校准账本的系统性倾向，给一条非强制的调权建议")
     args = ap.parse_args(argv)
 
     window = max(1, args.window)
     top = args.top if args.top and args.top > 0 else None
+    if args.calibrate:
+        _print_calibration_hint()
+        sys.exit(0)
     if args.json:
         print(json.dumps(manifest(window, top), ensure_ascii=False, indent=2))
     else:
