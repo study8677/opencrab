@@ -113,6 +113,15 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="weaning_trial",
+        # 断奶实战赛：拔掉外援,只准 brain 自己产补丁→自测→修不动就回滚。
+        # 复跑命令验证 3 道真修仍全过、且回滚探针仍能触发——独立性靠通过率持续证明,不靠宣言。
+        asserts="brain 不雇外援也能独立修通真伤,修不动则老实回滚保命",
+        argv=_PY + ["weaning_trial.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 
