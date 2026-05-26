@@ -16,7 +16,7 @@
 
 | 器官 | 近 2 天审计点名 | 证据状态 | 它本来兜的活（待人工确认） |
 |------|----------------|----------|----------------------------|
-| `bilinguallens.py` | 1（地板） | ⚪未证 | 中英双语视角/对照 —— 与 `lexicon.py`、`embassy.py` 是否职责重叠？ |
+| ~~`bilinguallens.py`~~ ⚰️已退役(2026-05-26→`attic/`) | 1（地板） | ⚪未证 | 中英双语视角/对照 —— 活由 `lexicon.py`+`embassy.py` 接住，下架至 `attic/`（可逆）。 |
 | `batchflow.py` | 1（地板） | ⚪未证 | 批处理流水 —— 与 `parallelpilot.py`、`throughput.py` 是否被新器官取代？ |
 | `compat.py` | 1（地板） | ⚪未证 | 兼容性检查 —— 与 `migration.py`、`contracts.py` 是否可合并？ |
 
