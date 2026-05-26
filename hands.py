@@ -187,3 +187,13 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
         cur = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         if cur and cur != base:                 # 兜底：确保回到主干
             _git(repo, "checkout", base)
+        _feedback(result)                       # 证据回灌：把这次自测判决喂回信任分/能力图谱
+
+
+def _feedback(result: dict) -> None:
+    """把这次动手的结果回灌给证据账本与能力图谱(尽力而为，绝不反噬动手)。"""
+    try:
+        import handsfeedback
+        handsfeedback.feed(result)
+    except Exception:   # noqa: BLE001 —— 回灌是副产物，缺席/出错都不该拖垮手
+        pass
