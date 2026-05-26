@@ -332,6 +332,15 @@ def main(argv: list[str] | None = None) -> int:
     if pr is None and not args.down:
         ap.error("给我 --down <资源> 出方案,或 --probe 探境,或 --history 复盘")
 
+    # 降级断点:手动声明的资源全是拼错的(没一个落在 RESOURCES 上),且不是 --probe
+    # 探出来的——此时 down 会被 plan() 滤成空集,继而打印「全绿、无需降级」。这正是
+    # 本模块最忌讳的「虚假的安心」:用户以为注入了故障,却被告知一切照常。宁可明着报错,
+    # 也不发一份骗人的满血方案。
+    if pr is None and args.down and not (set(args.down) & set(RESOURCES)):
+        ap.error("没有一个 --down 资源是认识的(认识的:%s);"
+                 "拒绝出一份「全绿」的假方案——请检查拼写。"
+                 % ", ".join(RESOURCES))
+
     p = plan(down)
     pid = None
     if not args.dry:
