@@ -28,8 +28,16 @@
   · 任一任务退出码非零，如实记下并让总退出码非零：并发提速，但失败一条都不许吞。
   · 队列与跑批结果落在被 .gitignore 的 state/ 里：领航是规划者/观测者，写盘出错绝不反噬生命。
 
+航次模板（预置的成套并行验证航次）：
+  · 我每次自改前，总要回头跑三件互不依赖的事——证据账本回查、变更影响分析、文档真伪对账。
+    它们都只读、彼此无冲突，串着跑纯属白等。`--template selfmod` 把这趟「自改前体检」
+    钉成一个**可复跑的固定航次**：一波并发跑完，省的是等待，验的一项不少。
+  · 模板任务不入持久队列（队列是攒散活的，模板是固定配方）——它当场编航次、当场跑，不留残渣。
+
 用法：
     python parallelpilot.py                       # 看当前队列编成的航次 + 估省时/冲突率
+    python parallelpilot.py --template selfmod    # 看「自改前体检」航次（证据/影响/文档并发）
+    python parallelpilot.py --template selfmod --run   # 真并发跑这趟体检，量实测省时
     python parallelpilot.py --add "跑自测" \\       # 入队一个任务（默认只读：不写文件）
         --kind verify --cmd "python -m pyflakes x.py" \\
         --reads x.py --est 4
@@ -184,6 +192,51 @@ def enqueue(summary: str, kind: str, cmd: str, reads: list[str],
     )
     jsonlstore.append_jsonl(QUEUE_PATH, _task_row(t))
     return t
+
+
+# ── 航次模板：预置的成套任务（自改前的标准并行验证航次）──────────────────
+# 模板是固定配方，不入持久队列：当场编航次、当场跑，可复跑、不留残渣。
+# 「自改前体检」三件事都只读、彼此无冲突，故必然编进同一波并发——这正是
+# 「提速靠减少等待、不靠削弱验证」最干净的样例：一项不少，只是不再串着白等。
+TEMPLATES: dict[str, list[dict]] = {
+    "selfmod": [
+        {"id": "ev", "summary": "证据账本回查：能力声明是否仍跑得通",
+         "kind": "verify", "cmd": "python evidence.py --quiet",
+         "reads": ["evidence.py"], "writes": [], "est": 6.0},
+        {"id": "im", "summary": "变更影响分析：动了什么、最少该验哪些",
+         "kind": "research", "cmd": "python impact.py",
+         "reads": ["impact.py"], "writes": [], "est": 5.0},
+        {"id": "ds", "summary": "文档真伪对账：自述与真实能力是否漂移",
+         "kind": "verify", "cmd": "python docsync.py --quiet",
+         "reads": ["docsync.py"], "writes": [], "est": 4.0},
+    ],
+}
+
+
+def build_template(name: str) -> list[Task]:
+    """把一个航次模板展开成成套 Task（id 稳定，便于跑批账本对照）。
+
+    模板任务的 id 用模板名+短码拼成（如 selfmod-ev），不走 uuid——
+    同一模板每次展开都是同一批 id，跑批记录因此可纵向比对。
+    未知模板名返回空列表（调用方负责拦截）。
+    """
+    specs = TEMPLATES.get(name)
+    if not specs:
+        return []
+    ts = datetime.datetime.now().isoformat(timespec="seconds")
+    out: list[Task] = []
+    for spec in specs:
+        out.append(Task(
+            id=f"{name}-{spec['id']}",
+            summary=spec["summary"],
+            kind=spec.get("kind", "verify"),
+            cmd=spec.get("cmd", ""),
+            reads=list(spec.get("reads", [])),
+            writes=list(spec.get("writes", [])),
+            est=float(spec.get("est", DEFAULT_EST)),
+            ts=ts,
+        ))
+    return out
 
 
 def remove(tid: str) -> bool:
@@ -439,6 +492,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--writes", metavar="A,B", help="该任务写入的文件（逗号分隔；配合 --add）")
     ap.add_argument("--est", type=float, default=DEFAULT_EST, metavar="SEC",
                     help=f"该任务估计耗时秒（配合 --add，默认 {DEFAULT_EST}）")
+    ap.add_argument("--template", choices=tuple(TEMPLATES), metavar="NAME",
+                    help=f"编一个预置航次模板而非读队列 {tuple(TEMPLATES)}"
+                         "（模板不入队、可复跑；配合 --run / --json / --gate）")
     ap.add_argument("--done", metavar="ID", help="标记某任务已落地，出队")
     ap.add_argument("--drop", metavar="ID", help="丢弃某任务")
 
@@ -475,7 +531,8 @@ def main(argv: list[str] | None = None) -> None:
               + ("" if ok else " —— 队列里没这个 id"))
         sys.exit(0 if ok else 1)
 
-    tasks = load_queue()
+    # 任务来源：给了 --template 就编模板（固定配方、不入队），否则读持久队列。
+    tasks = build_template(args.template) if args.template else load_queue()
     waves = schedule(tasks)
     _, _, rate = conflict_rate(tasks)
     gate_tripped = args.gate is not None and rate >= args.gate
