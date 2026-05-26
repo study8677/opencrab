@@ -38,6 +38,8 @@ _EPISODES = _MEM_DIR / "episodes.jsonl"
 MAX_EPISODES = 300        # 短期记忆容量上限：超了就蜕掉最老的
 _TRIM_SLACK = 60          # 攒到 上限+余量 才真正重写文件，省得每条都全量改写
 MIN_SIMILARITY = 0.06     # 低于此相似度视作「不相干」，不召回(免得硬凑噪声)
+RECENCY_HALFLIFE_DAYS = 30.0  # 记忆新鲜度半衰期：越老的往事在召回里越轻，免得旧经验误导今天的决策
+STALE_AGE_DAYS = 90.0     # 超过此天数的往事视作「过期低信任」，prune 时清掉(教训早已不再适用)
 
 
 # ── 一条情境记忆 ────────────────────────────────────────────────────
@@ -142,20 +144,65 @@ def remember(situation: str, action: str, result: str, *,
 
 
 # ── 检索 / 提示 ─────────────────────────────────────────────────────
-def recall(situation: str, k: int = 3,
-           min_similarity: float = MIN_SIMILARITY) -> list[tuple[float, Episode]]:
-    """按当下情境检索最像的 k 条往事，返回 (相似度, Episode) 降序列表。
+def _age_days(at: str, *, now: datetime.datetime | None = None) -> float | None:
+    """这条往事距今多少天；时间戳解析不出返回 None(当作不可知，不参与衰减)。"""
+    try:
+        then = datetime.datetime.fromisoformat(at)
+    except (ValueError, TypeError):
+        return None
+    now = now or datetime.datetime.now()
+    return max(0.0, (now - then).total_seconds() / 86400.0)
 
-    相似度相同时，让**失败**的往事优先(教训比顺风更值得拎出来),
-    再按时间更近优先。
+
+def _recency_weight(at: str, *, now: datetime.datetime | None = None) -> float:
+    """新鲜度权重 ∈ (0,1]：越老越轻，半衰期 RECENCY_HALFLIFE_DAYS。
+
+    时间戳不可知时退回 1.0(不主动惩罚无法判龄的往事)。让召回偏向**仍然适用**的近期教训，
+    旧经验自然淡出而非被当成铁律——决策被过期记忆误导，进化会越快越偏。
+    """
+    age = _age_days(at, now=now)
+    if age is None:
+        return 1.0
+    return 0.5 ** (age / RECENCY_HALFLIFE_DAYS)
+
+
+def recall(situation: str, k: int = 3,
+           min_similarity: float = MIN_SIMILARITY,
+           *, now: datetime.datetime | None = None) -> list[tuple[float, Episode]]:
+    """按当下情境检索最像的 k 条往事，返回 (新鲜度加权相似度, Episode) 降序列表。
+
+    召回分 = 词袋相似度 × 新鲜度权重：相似但很老的往事会被压低，让**仍然适用**的近期
+    教训优先。门槛 min_similarity 仍只卡**原始**相似度(免得新鲜度把不相干的硬抬进来)。
+    分数相同时，让**失败**的往事优先(教训比顺风更值得拎出来)，再按时间更近优先。
     """
     scored: list[tuple[float, Episode]] = []
     for ep in load():
         s = similarity(situation, ep.situation)
         if s >= min_similarity:
-            scored.append((s, ep))
+            scored.append((s * _recency_weight(ep.at, now=now), ep))
     scored.sort(key=lambda it: (it[0], not it[1].ok, it[1].at), reverse=True)
     return scored[:k]
+
+
+def prune(max_age_days: float = STALE_AGE_DAYS, *,
+          now: datetime.datetime | None = None) -> int:
+    """清掉超龄的过期低信任往事，返回清掉的条数；写盘失败被吞掉，绝不反噬。
+
+    比按容量蜕壳(_trim)更有的放矢：哪怕没满，超过 max_age_days 的教训也早已与今天无关，
+    留着只会污染召回。无可清或写盘失败一律返回 0。
+    """
+    raw = _read_raw()
+    kept = [d for d in raw
+            if (_age_days(str(d.get("at", "")), now=now) or 0.0) <= max_age_days]
+    removed = len(raw) - len(kept)
+    if removed <= 0:
+        return 0
+    try:
+        _EPISODES.write_text(
+            "".join(json.dumps(d, ensure_ascii=False) + "\n" for d in kept), "utf-8")
+    except Exception:
+        return 0   # 记忆是观测者，清不动也绝不弄死生命
+    return removed
 
 
 def advise(situation: str, k: int = 3) -> str:
