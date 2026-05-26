@@ -122,6 +122,16 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="autonomy_meter",
+        # 自主依赖脱钩仪表:把每次自改逐条点名(调没调外援/回没回滚/证据回没回灌),
+        # 折成 7 日断奶趋势线。复跑命令验证汇流/折叠/趋势判读这条观测管子本身还稳——
+        # 独立性要被持续观测,不靠一次比赛宣称。
+        asserts="每次自改的外援依赖/回滚/回灌能被汇流成可观测的 7 日断奶趋势线",
+        argv=_PY + ["autonomy_meter.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 
