@@ -133,6 +133,16 @@ CLAIMS: list[Claim] = [
         risk=2.0,
     ),
     Claim(
+        name="astlocator",
+        # AST 自生手定位器:让 brain 小修按函数/方法/CLI 入口精确「找准下刀处」,只改那一段。
+        # 复跑命令验证三类真实修补仍①定位准 ②只改那一段(段外不动) ③契约放行 ④oracle 判真修好——
+        # 亲手写代码不能只会整文件替换,先得长出稳定的「找准下刀处」。
+        asserts="brain 小修能按函数/方法/CLI入口精确定位并只改那一段,段外原样不动",
+        argv=_PY + ["astlocator.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
+    Claim(
         name="autonomy_meter",
         # 自主依赖脱钩仪表:把每次自改逐条点名(调没调外援/回没回滚/证据回没回灌),
         # 折成 7 日断奶趋势线。复跑命令验证汇流/折叠/趋势判读这条观测管子本身还稳——
