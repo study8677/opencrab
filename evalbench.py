@@ -73,6 +73,47 @@ DIMENSIONS = {
     "autonomy":   ("🤖", "自主性", "自己干完、没卡住/绕路/反复栽同一个码"),
 }
 
+# ── 承诺锚点：把 README 的核心承诺，各钉一条「端到端验收」───────────────
+# 为什么要有它：上面三把尺量的是「我做任务的质量在不在升」，但量在哪些任务上,
+# 由 bless 从记忆里挑——挑得到什么全凭近期跑了什么，README 对外许的核心承诺反而
+# 可能根本没有任何黄金任务在盯。承诺锚点补上这层：把 README 三条核心承诺，各映射到
+# 一个**真实任务画像**(probe)，到记忆里捞**真发生过、且够像**的经历来验收——
+# 验收的是「这条承诺，现在有没有真实证据撑着、撑到没撑到验收线」，
+# 而不是造一条玩具用例自证(那正是这只螃蟹的天敌——古德哈特刷分)。
+#
+# 每条：id、README 承诺原话、主看哪把尺(dim)、probe(描述什么真实任务能验收它,
+# 用于在记忆里匹配最近一次经历)、accept(一句话端到端验收标准)。
+PROMISES = [
+    {
+        "id": "p1",
+        "promise": "拥有自己的目标——没人发指令时，自己决定今天怎么让自己更好。",
+        "dim": "autonomy",
+        "probe": "没人下指令时自己生成意图、决定今天推进哪个模块、"
+                 "自主把改动从动手做到自测、合并、push 全程走完。",
+        "accept": "有一条真实经历：无人指派下自主选定并独立完成一次进化。",
+    },
+    {
+        "id": "p2",
+        "promise": "雇 Claude Code / Codex 当爪子，在自己的分支上真改代码、让自己进化。",
+        "dim": "usefulness",
+        "probe": "在新分支上实施一次代码改动，结果点到具体文件/行数/diff/commit，"
+                 "自测通过后合并进主干并 push。",
+        "accept": "有一条真实经历：改动真做成且结果具体(落到文件/数字/diff)。",
+    },
+    {
+        "id": "p3",
+        "promise": "为真正的进步而活，不是刷分机器人——克制、稳健、诚实。",
+        "dim": "clarity",
+        "probe": "一次沉淀/复盘结构清晰、详略得当，诚实呈现做了什么、结果如何，"
+                 "失败也照实记录，不混噪声、不粉饰成功。",
+        "accept": "有一条真实经历：表达清晰、诚实呈现成败，不靠噪声或粉饰撑场面。",
+    },
+]
+
+# 端到端验收线：捞到的真实经历，总分够这条 + 主看维度够 PROMISE_DIM_PASS，才算「验收通过」。
+PROMISE_PASS_TOTAL = 6   # 总分(满分 9)
+PROMISE_DIM_PASS = 2     # 主看维度(满分 3)
+
 # 启发式打分用到的信号词(梦境模式下的代理评委)。
 _CONCRETE_RE = re.compile(
     r"`[^`]+`|\b\w+\.py\b|\b\d+\s*(?:行|条|个|次|处|%|ms|KB)|diff|commit|[0-9a-f]{7,}")
@@ -391,6 +432,58 @@ def _delta_arrow(cur: float, prev: float | None) -> str:
     return "→0"
 
 
+# ── 承诺验收：每条 README 承诺，到记忆里捞真实证据，端到端判过没过 ────────
+def promise_coverage(use_brain: bool = True) -> list[dict]:
+    """对每条 README 承诺，捞最近一条**够像的真实经历**评分，给端到端验收结论。
+
+    verdict：pass(✅ 有真实证据且达验收线) / weak(⚠️ 有经历但没到线) /
+            none(❌ 暂无够像的真实经历，承诺还没被任何真实任务验收)。
+    只读派生、不造任务、不改黄金集——读不到记忆就整体降级为 none，不崩。
+    """
+    scorer = _brain_score if use_brain else _heuristic_score
+    out: list[dict] = []
+    for p in PROMISES:
+        ep = _latest_attempt(p["probe"])
+        if ep is None:
+            out.append({**{k: p[k] for k in ("id", "promise", "dim", "accept")},
+                        "verdict": "none", "matched": False, "score": None,
+                        "evidence": "（暂无够像的真实经历来验收这条承诺）"})
+            continue
+        s = scorer(p["id"], ep)
+        dim_ok = s.dims()[p["dim"]] >= PROMISE_DIM_PASS
+        passed = s.total >= PROMISE_PASS_TOTAL and dim_ok
+        out.append({**{k: p[k] for k in ("id", "promise", "dim", "accept")},
+                    "verdict": "pass" if passed else "weak",
+                    "matched": True, "judge": s.judge,
+                    "score": {**s.dims(), "total": s.total},
+                    "evidence": s.evidence})
+    return out
+
+
+def render_promises(use_brain: bool = True) -> str:
+    """渲染承诺验收：README 三条核心承诺，各一条端到端验收(过/弱/无)。"""
+    cov = promise_coverage(use_brain)
+    mark = {"pass": "✅", "weak": "⚠️", "none": "❌"}
+    L = ["📊🎓 README 核心承诺 · 端到端验收",
+         f"   验收线：总分 ≥ {PROMISE_PASS_TOTAL}/9 且主看维度 ≥ {PROMISE_DIM_PASS}/3",
+         "   验收的是「承诺现在有没有真实证据撑着」，不造玩具用例自证。", ""]
+    for c in cov:
+        icon, name, _ = DIMENSIONS[c["dim"]]
+        L.append(f"  {mark[c['verdict']]} {c['id']} {c['promise']}")
+        L.append(f"      主看 {icon}{name} · 验收：{c['accept']}")
+        if c["matched"]:
+            sc = c["score"]
+            L.append(f"      最近真实证据：🔎{sc['clarity']} 🛠️{sc['usefulness']} "
+                     f"🤖{sc['autonomy']} = {sc['total']}/9 · {c['evidence']}")
+        else:
+            L.append(f"      {c['evidence']}")
+    npass = sum(1 for c in cov if c["verdict"] == "pass")
+    L += ["", f"  小结：{npass}/{len(cov)} 条承诺已被真实任务端到端验收。"]
+    if npass < len(cov):
+        L.append("  没过的：要么近期没真做过这类任务(去跑)，要么做了但质量没到线(去改)。")
+    return "\n".join(L)
+
+
 # ── 导出 / 渲染 ──────────────────────────────────────────────────────
 def manifest(use_brain: bool = True) -> dict:
     """导出纯数据(给 health / 外部工具消费)：本次评测 + 与上次的逐维 delta。"""
@@ -409,6 +502,7 @@ def manifest(use_brain: bool = True) -> dict:
         "previous": prev,
         "deltas": deltas,
         "scores": [s.to_dict() for s in run.scores],
+        "promises": promise_coverage(use_brain),
     }
 
 
