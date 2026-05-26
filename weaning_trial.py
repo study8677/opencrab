@@ -49,6 +49,7 @@ import sys
 import time
 
 import jsonlstore
+import patchcontract   # 自生补丁契约：招式吐出的候选，先过「畸形/越界」拒收闸才准收
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 TRIAL_LOG = REPO_ROOT / "state" / "weaning_trial.jsonl"
@@ -155,11 +156,18 @@ def brain_repair(broken: str, *, max_rounds: int = 6) -> Repair:
             return Repair(fixed=src, rolled_back=False, trace=trace)
         for tactic in TACTICS:
             cand = tactic(src, exc)
-            if cand is not None and cand != src:
-                trace.append(f"{tactic.__name__} ⮕ {type(exc).__name__}")
-                src = cand
-                break
-        else:  # 一招都使不上 —— 老实回滚,绝不硬塞一个改坏的补丁
+            if cand is None or cand == src:
+                continue
+            # 拒收闸：招式吐出的候选先过补丁契约——畸形(空/非串)或越界(重写式大改)当场拒，
+            # 换下一招;一只可托付的爪子,落笔前先得能判「这一爪收不收」。
+            verdict = patchcontract.validate(src, cand)
+            if not verdict.ok:
+                trace.append(f"{tactic.__name__} 补丁被契约拒收({verdict.code})")
+                continue
+            trace.append(f"{tactic.__name__} ⮕ {type(exc).__name__}")
+            src = cand
+            break
+        else:  # 一招都使不上(或都被契约拒收) —— 老实回滚,绝不硬塞一个改坏的补丁
             trace.append(f"无招可解 {type(exc).__name__}: {str(exc)[:60]}")
             return Repair(fixed=None, rolled_back=True, trace=trace)
     # 招数用尽仍没修通：回滚保命
@@ -306,6 +314,15 @@ def selfcheck(quiet: bool = False) -> bool:
         failures.append("回滚探针:brain 竟「修好」了一道无解伤——回滚没触发,危险")
     elif not rep.rolled_back:
         failures.append("回滚探针:brain 没修成却没标记回滚——断肢再生失灵")
+
+    # 拒收闸探针:brain_repair 收候选前依赖的补丁契约,必须把畸形/越界的当场拒收。
+    # 这是「自生补丁可拒绝」的最小证明——拒收闸一旦失灵,brain 就会照单全收坏补丁。
+    legit = "def add(a, b):\n    return a + b\n"      # 正当的「修一处」候选
+    if not patchcontract.accepts("def add(a, b)\n    return a + b\n", legit):
+        failures.append("拒收闸探针:正当的「修一处」补丁竟被契约拒收")
+    overhaul = "\n".join(f"line{i}" for i in range(50))   # 重写式大改 = 越界
+    if patchcontract.accepts("def add(a, b)\n    return a + b\n", overhaul):
+        failures.append("拒收闸探针:重写式越界补丁竟被契约接收——危险,brain 会照单全收")
 
     ok = not failures
     if not quiet:
