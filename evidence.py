@@ -95,6 +95,15 @@ CLAIMS: list[Claim] = [
         ttl_days=3,
         risk=2.0,
     ),
+    Claim(
+        name="hands",
+        # 这条能力的「新鲜证据」主要由 handsfeedback 回灌：每次亲手改完自测的判决会落账，
+        # 让 trustscore 据此算出「自生手」的信任分。复跑命令则验证回灌这条管子本身还稳。
+        asserts="自生手改完代码能自测、且自测判决能回灌成证据",
+        argv=_PY + ["handsfeedback.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 

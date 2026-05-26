@@ -42,15 +42,17 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
-# 验证证据的四个来源(显示名 → 实际文件)。顺序即渲染顺序。
+# 验证证据的五个来源(显示名 → 实际文件)。顺序即渲染顺序。
 _PROOF_LABELS = {
     "回归": "regression.py",
     "烟雾": "smoke.py",
+    "亲验": "handsfeedback(回灌)",
     "文档": "README.md",
     "能力": "capabilities/",
 }
-# 前两样(回归/烟雾)是「真跑过、守着输出」的硬证据；后两样只是「露过面」。
-_HARD_PROOF = ("回归", "烟雾")
+# 「真跑过、守着输出」的硬证据：回归/烟雾是预置样本守着，亲验是「我刚亲手改过且
+# 改完自测真跑通」的最新鲜实证——三者都算「有东西真验过它」；文档/能力只是「露过面」。
+_HARD_PROOF = ("回归", "烟雾", "亲验")
 
 
 # ── 读领地：模块清单 + 各自的本事 ──────────────────────────────────
@@ -110,7 +112,20 @@ def _read(path: pathlib.Path) -> str:
         return ""
 
 
-def _proof(stem: str) -> dict[str, str]:
+def _proven_modules() -> dict[str, dict]:
+    """最近被亲手改过且自测跑通的模块(来自 handsfeedback 回灌)。
+
+    尽力而为：回灌层缺席 / 账本空 / 出错，都退回空字典——图谱照旧静态自省，
+    「亲验」只是有就锦上添花，绝不因它缺席而崩。
+    """
+    try:
+        import handsfeedback
+        return handsfeedback.proven_modules()
+    except Exception:   # noqa: BLE001
+        return {}
+
+
+def _proof(stem: str, proven: dict[str, dict] | None = None) -> dict[str, str]:
     """这个模块有哪些验证证据？返回 {证据名: 具体凭据}，缺的不收。"""
     found: dict[str, str] = {}
     needle = f"{stem}.py"
@@ -133,6 +148,12 @@ def _proof(stem: str) -> dict[str, str]:
     if (REPO_ROOT / "capabilities" / f"cap_{stem}.py").exists():
         found["能力"] = f"capabilities/cap_{stem}.py"
 
+    # 亲验：最近被亲手改过、且那次改动自测真跑通(最新鲜的实证)
+    proven = _proven_modules() if proven is None else proven
+    if stem in proven:
+        hand = proven[stem].get("hand", "?")
+        found["亲验"] = f"{hand} 刚亲手改过它且改完自测跑通"
+
     return found
 
 
@@ -153,11 +174,12 @@ def _gaps_for(skill: str | None, proof: dict[str, str]) -> list[str]:
 def build(module: str | None = None) -> dict:
     """自省整个领地，算出每个模块的「本事/证据/缺口」档案(纯数据)。"""
     nodes: list[dict] = []
+    proven = _proven_modules()   # 回灌账本只读一次，按模块分发，省得每模块都读盘
     for stem in _modules():
         if module and stem != module:
             continue
         skill = _docstring_first_line(stem)
-        proof = _proof(stem)
+        proof = _proof(stem, proven)
         nodes.append({
             "module": f"{stem}.py",
             "skill": skill,
