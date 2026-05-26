@@ -39,9 +39,14 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# 四维权重：合计 1.0。能力缺口是主心骨给最重，风险次之（带病不能发），
-# 记忆/反馈是放大器。改这里就能调「我现在更看重哪种该做」。
-WEIGHTS = {"gap": 0.35, "risk": 0.30, "memory": 0.20, "feedback": 0.15}
+# 四维权重：合计 1.0。能力缺口是主心骨给最重。
+# 2026-05-26「边际收益雷达」复盘调权（calibration+value+harvest 视角）：把 0.10 从
+# 「风险」挪给「外界反馈」。回看近 50 航次，高耗低收益的典型是防御性/照镜子航次
+# （risk 驱动的供应链顺手清、纯 --check 跑一圈），harvest 多判 🫧泡沫、无真实受益者；
+# 而 value.py 的核心判据正是「被外界点名 > 自我臆想」，feedback 才是「会结真收益而非
+# 泡沫」最可靠的代理，却长期被压最低。本仓纯标准库自包含，high 危隐患极少真兑现。
+# 故：feedback 0.15→0.25（升），risk 0.30→0.20（降）；gap/memory 不动。
+WEIGHTS = {"gap": 0.35, "feedback": 0.25, "memory": 0.20, "risk": 0.20}
 
 
 @dataclasses.dataclass
