@@ -112,6 +112,21 @@ def _sample_health_primitives() -> None:
         "strict 下 warn 须视作不过"
 
 
+def _sample_patchcontract() -> None:
+    import patchcontract
+    # 正当的「修一处」补丁须被接收
+    ok = patchcontract.validate("def add(a, b)\n    return a + b\n",
+                                "def add(a, b):\n    return a + b\n")
+    assert ok.ok and ok.code == "", f"正当补丁须被接收，实得 {ok.to_meta()}"
+    # 畸形：空白/非串/None 须被拒，且永不抛错
+    assert patchcontract.validate("x\n", "   \n").code == "malformed-empty", "空白补丁须拒"
+    assert patchcontract.validate("x\n", None).code == "malformed-none", "None 补丁须拒"
+    assert not patchcontract.validate("x\n", 123).ok, "非字符串补丁须拒（不抛错）"
+    # 越界：重写式大改即便能编译也须被拒
+    overhaul = "\n".join(f"line{i}" for i in range(50))
+    assert not patchcontract.accepts("def add(a, b)\n    return a + b\n", overhaul), "越界大改须拒"
+
+
 CONTRACTS: list[Contract] = [
     Contract(
         module="jsonlstore",
@@ -140,6 +155,13 @@ CONTRACTS: list[Contract] = [
         inputs="_ok/_warn/_err 造一条 Finding；summarize(findings, strict=) 收一批 Finding",
         outputs="error 一票否决；warn 默认不致命、strict 下视作不过；返回 (healthy, errors, warns)",
         sample=_sample_health_primitives,
+    ),
+    Contract(
+        module="patchcontract",
+        duty="钉死 brain 自改补丁的格式，畸形/越界的候选当场拒收",
+        inputs="validate(before, after) 收原文与候选补丁；accepts(before, after) 收同样两段、回 bool",
+        outputs="回 PatchVerdict(ok, code, reason)：畸形(None/非串/空白)→malformed-*，重写式越界→out-of-bounds-*；永不抛错",
+        sample=_sample_patchcontract,
     ),
 ]
 
