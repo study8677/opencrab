@@ -127,6 +127,23 @@ def _sample_patchcontract() -> None:
     assert not patchcontract.accepts("def add(a, b)\n    return a + b\n", overhaul), "越界大改须拒"
 
 
+def _sample_patchfitroom() -> None:
+    import patchfitroom
+    # 试衣间最根本的承诺：没过闸的候选，真文件分毫不动、绝不写回。
+    # 用形状闸(畸形候选)取这条不变式——它在写真文件、起子进程之前就短路返回，纯内存、瞬时。
+    with tempfile.TemporaryDirectory() as d:
+        target = pathlib.Path(d) / "m.py"
+        original = "def f(x):\n    return x + 1\n"
+        target.write_text(original, encoding="utf-8")
+        # check_contracts=False：本样例正由 contracts.verify() 跑着，而 fit 的契约闸又会子进程跑
+        # contracts.verify()——关掉它斩断「verify→sample→fit→verify」的再入链(畸形候选本就在
+        # shape 闸短路、跑不到契约闸,这里再钉死一道防线,杜绝未来改样例时引爆子进程风暴)。
+        r = patchfitroom.fit(target, "   \n", repo=pathlib.Path(d), check_contracts=False)
+        assert not r.written and r.gate == "shape", f"畸形候选须被 shape 闸拦下，实得 {r.to_meta()}"
+        assert target.read_text(encoding="utf-8") == original, "拒收后真文件须分毫不动"
+        assert patchfitroom.GATE_ORDER[0] == "shape", "闸序须以最便宜的 shape 闸打头"
+
+
 CONTRACTS: list[Contract] = [
     Contract(
         module="jsonlstore",
@@ -162,6 +179,13 @@ CONTRACTS: list[Contract] = [
         inputs="validate(before, after) 收原文与候选补丁；accepts(before, after) 收同样两段、回 bool",
         outputs="回 PatchVerdict(ok, code, reason)：畸形(None/非串/空白)→malformed-*，重写式越界→out-of-bounds-*；永不抛错",
         sample=_sample_patchcontract,
+    ),
+    Contract(
+        module="patchfitroom",
+        duty="brain 补丁先在临时副本过语法/import/契约三闸，过闸才原子写回，没过则真文件分毫不动",
+        inputs="fit(target, candidate, *, repo, apply) 收目标文件路径与候选完整源码",
+        outputs="回 FitResult(written, gate, detail, ...)：四闸全过且 apply→原子写回；任一闸没过→真文件不动、点名卡在哪闸；永不抛错",
+        sample=_sample_patchfitroom,
     ),
 ]
 
