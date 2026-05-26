@@ -29,3 +29,22 @@
 
 > 强不只靠新增，也靠知道哪些本事仍然值得保留。这张单子是「先看清、再决定」，
 > 不是「先删了再说」。
+
+## 自动化：`retirementgate.py`（2026-05-27 起）
+
+这张观察单原是手工对齐 usageheat / evidence 三处痕迹。现在 `retirementgate.py` 把这步串成
+一道**观测者闸**：自动对齐 usageheat（冰封=冷×证据过期）× trustscore/evidence（有无可复跑
+证据、信任分多低）× lifecycle（当前阶段），给每个冷且证据过期的器官派一张单——
+
+- 🔁 **复验单**：器官有证据声明但已过期/不可信 → 退役前先逼它再证一遍（过则留人）。
+- ⚰️ **退役单**：连一条可复跑证据都没有 → 走退役流程。**退役单 ≠ 删除令**：它把
+  `lifecycle.py` 进入 `retired` 的硬闸条目（successor + before/after 对照）原样抄在单上。
+- 🍂 **悬而未决**：已 `deprecated` 但退役未落地的，单列盯着别烂尾。
+
+```
+python retirementgate.py          # 打印候选单
+python retirementgate.py --gate   # 有退役单候选即退出码非零（清账轻推，可挂 CI）
+python retirementgate.py --json   # 机读
+```
+
+闸只**开单**，绝不删字节——和这张观察单一个立场：先看清、再决定。
