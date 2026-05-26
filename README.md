@@ -61,6 +61,8 @@ opencrab 自己没有手——要真改代码、让自己进化时，它**雇佣
 
 ## 唤醒它
 
+> 💡 下面的 `python` 指 Python 3。许多系统（macOS、不少 Linux）默认只装了 `python3`、没有 `python`——若敲 `python` 报 `command not found`，把命令里的 `python` 换成 `python3` 即可。
+
 ```bash
 cp .env.example .env        # 填任意 OpenAI 兼容 key：DeepSeek / Kimi / GPT…
 python crab.py --once       # 让它心跳一次
