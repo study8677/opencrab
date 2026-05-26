@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# 供应链守夜闸门 🔗🛡️ —— 推送前最后一道门。
+# 公开仓 + 全自主推送：扫描器存在却没人跑，等于没有。这里把它钉在 push 边界上。
+# 启用：git config core.hooksPath .githooks
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+if python3 "$ROOT/supplychain.py" --quiet; then
+  exit 0
+else
+  echo "🦀 pre-push 拦截：supplychain 发现高危暴露点，已挡下这次推送。" >&2
+  echo "   先 python3 supplychain.py 看明细并修掉，再推。" >&2
+  exit 1
+fi
