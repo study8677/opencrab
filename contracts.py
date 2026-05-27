@@ -159,6 +159,25 @@ def _sample_fitrework() -> None:
     assert not fitrework.seal(passed, "x", persist=False).sealed, "已过闸写回的不该被封"
 
 
+def _sample_moveset() -> None:
+    import moveset
+    import patchcontract
+    import weaning_trial
+    # 招式库最根本的承诺：谱非空、每招都能自验修通它自己的样例，且 suggest 只端「真能对这段源码
+    # 落地」的招(候选过补丁契约)、按可靠度降序。全程纯内存：自验/建议都在本进程 exec 赛题源码、
+    # 不起子进程、不回调 contracts.verify()——不像 _sample_patchfitroom 那样有再入风险，无须关闸。
+    assert moveset.CATALOG, "招式谱不该为空——至少从 weaning 的 TACTICS 提炼出几招"
+    assert all(moveset.verify_move(m) for m in moveset.CATALOG), "每招都该能自验修通自己的 worked example"
+    broken = "def add(a, b)\n    return a + b\n"          # 漏冒号的真伤
+    exc, _ = weaning_trial._self_test(broken)
+    sug = moveset.suggest(broken, exc)
+    assert sug and sug[0].move_id == "missing_colon", f"漏冒号现场该首推 missing_colon，实得 {sug}"
+    assert all(patchcontract.accepts(broken, s.candidate) for s in sug), \
+        "suggest 端出的候选都须过补丁契约(真能落地)"
+    ranks = [s.rank for s in sug]
+    assert ranks == sorted(ranks, reverse=True), f"suggest 须按可靠度降序，实得 {ranks}"
+
+
 CONTRACTS: list[Contract] = [
     Contract(
         module="jsonlstore",
@@ -208,6 +227,13 @@ CONTRACTS: list[Contract] = [
         inputs="seal(result, candidate, *, persist) 收一个 patchfitroom.FitResult 与对应候选源码",
         outputs="只封拒收(written=False 且卡在某闸)，过闸/看效果的跳过；案例命令走 --fit-dry 重跑零副作用；persist=False 只搭对象不落盘",
         sample=_sample_fitrework,
+    ),
+    Contract(
+        module="moveset",
+        duty="把 weaning 的底层招式收成「落爪前先查一眼」的谱：每招配可靠度，撞上报错先荐真能落地的招",
+        inputs="suggest(src, exc) 收一段源码与撞上的异常；verify_move(move) 收一张招式卡；distill() 无参",
+        outputs="suggest 只回「真能对 src 落地(候选过补丁契约)」的招、按实战可靠度降序；distill 回整本招式谱；永不抛错",
+        sample=_sample_moveset,
     ),
 ]
 

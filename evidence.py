@@ -182,6 +182,17 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="moveset",
+        # 自生手补丁招式库:把 weaning 的底层招式(补冒号/括号print/名字纠偏)收成「落爪前先查一眼」的谱——
+        # 每招配自验(拿自己的 worked example 重跑还修不修得通)+ 从历次战报采掘的实战胜率。复跑命令验证
+        # 每招都能自验修通、且 suggest 只端「真能对这段源码落地」的招并按可靠度排序——手不该只会试错,
+        # 还要把经验变成下次落爪前的直觉。
+        asserts="撞上报错时,招式库能按实战可靠度荐出真能对这段源码落地的改写招,而非盲目逐招试",
+        argv=_PY + ["moveset.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 
