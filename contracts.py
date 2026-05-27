@@ -195,6 +195,22 @@ def _sample_touch() -> None:
     assert av.ok and av.abstained, f"候选解析失败须弃权放行而非误杀，实得 {av.to_meta()}"
 
 
+def _sample_astrewriter() -> None:
+    import astrewriter
+    # AST 级改写器最根本的承诺：定不到目标节点时，在进试衣间之前就拦下、真文件分毫不动。
+    # 用 locate 路径取这条不变式——它在 astlocator.rewrite 返回 locus=None 时即短路返回，
+    # 既不起子进程、也不写盘(像 _sample_patchfitroom 那样刻意避开子进程，杜绝契约验收里引爆子进程)。
+    with tempfile.TemporaryDirectory() as d:
+        target = pathlib.Path(d) / "m.py"
+        original = "def f(x):\n    return x + 1\n"
+        target.write_text(original, encoding="utf-8")
+        r = astrewriter.rewrite_fit(target, "no_such_fn", lambda s: s, repo=pathlib.Path(d))
+        assert not r.written and r.gate == "locate", f"定不到的节点须卡在 locate(不进试衣间)，实得 {r.to_meta()}"
+        assert r.gates_run == [], "locate 拦下时不该跑任何试衣间闸"
+        assert target.read_text(encoding="utf-8") == original, "拒收后真文件须分毫不动"
+        assert astrewriter.GATE_ORDER == ["syntax", "import", "replay"], "试衣间须是 语法/import/回放 三闸"
+
+
 CONTRACTS: list[Contract] = [
     Contract(
         module="jsonlstore",
@@ -258,6 +274,13 @@ CONTRACTS: list[Contract] = [
         inputs="feel(before, after) 收原文与候选两段源码；accepts(before, after) 收同样两段、回 bool",
         outputs="回 TouchVerdict(ok, added, abstained, ...)：新增 IO/env/网络/执行命令→ok=False 并点名 added；解析失败→弃权放行(ok=True, abstained=True)；纯静态、绝不执行候选、永不抛错",
         sample=_sample_touch,
+    ),
+    Contract(
+        module="astrewriter",
+        duty="按 AST 函数节点最小替换一处真文件，候选过 语法/import/回放 三闸，过闸才原子写回，没过则真文件分毫不动",
+        inputs="rewrite_fit(target, qualname, transform, *, replay, repo, apply) 收目标文件、节点限定名、只改那一段的 transform 与回放探针",
+        outputs="回 RewriteFitResult(written, gate, ...)：定位/越界先于试衣间拦下，三闸全过且有回放且 apply→原子写回；任一步没过→真文件不动、点名卡在哪；缺回放不写真身；永不抛错",
+        sample=_sample_astrewriter,
     ),
 ]
 
