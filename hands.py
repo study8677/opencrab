@@ -170,9 +170,15 @@ def _brain_attempt(repo: pathlib.Path) -> dict:
             fixed_files.append(p.name)
         else:   # 无招可解：本文件回滚原样(不落盘)，交回上层降级外援
             trace.append(f"{p.name}: 无招可解 {type(cur_exc).__name__}")
+            # 把这道修不动的真伤连**原始**坏源码一起带回——上层据此封进失败样本库，练成下次会。
+            # 存原始 src(而非半修态 cur)：replay 才能从头复刻这道训练题,日后招式库长了再考一遍。
+            wound = {"file": p.name, "exc_type": type(exc).__name__,
+                     "exc_msg": str(exc)[:200], "lineno": getattr(exc, "lineno", 0) or 0,
+                     "broken": src,
+                     "trace": [t for t in trace if t.startswith(f"{p.name}:")]}
             return {"ok": False,
                     "reason": f"brain 修不动 {p.name}({type(cur_exc).__name__})",
-                    "trace": trace, "files": fixed_files}
+                    "trace": trace, "files": fixed_files, "failed_samples": [wound]}
     return {"ok": True,
             "reason": f"brain 独立修好 {len(fixed_files)} 个语法伤：{', '.join(fixed_files)}",
             "trace": trace, "files": fixed_files}
@@ -207,6 +213,7 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
         brain = _brain_attempt(repo)
         result["brain_reason"] = brain["reason"]
         result["brain_trace"] = brain["trace"]
+        result["brain_failed_samples"] = brain.get("failed_samples", [])  # 修不动的真伤 → 封进失败样本库
         if brain["ok"]:
             result["mode"] = "brain"   # brain 独立动手，不雇外援、不花一分钱
         else:
@@ -291,4 +298,9 @@ def _feedback(result: dict) -> None:
         import patchnote
         patchnote.explain(result)   # 落笔即写下依据/契约影响/回滚点，让每一爪可审
     except Exception:   # noqa: BLE001 —— 解释同为副产物，出错绝不拖垮动手
+        pass
+    try:
+        import handsdojo
+        handsdojo.seal(result)      # brain 修不动的真伤 → 封成 replay+coach 训练题，练成下次会
+    except Exception:   # noqa: BLE001 —— 封样同为副产物，出错绝不拖垮动手
         pass
