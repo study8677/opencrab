@@ -48,6 +48,85 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping
+
+
+@dataclass(frozen=True)
+class HandsWeaningDecision:
+    """Decision record for routing hands.py through weaning by default."""
+
+    use_brain_only: bool
+    reason: str
+    downgrade_reason: str = ""
+
+
+def hands_default_decision(
+    *,
+    intent: str = "",
+    risk: str = "low",
+    brain_only_failed: bool = False,
+    failure_reason: str = "",
+    context: Mapping[str, Any] | None = None,
+) -> HandsWeaningDecision:
+    """Choose the default hands route during weaning.
+
+    Low-risk self edits should first try the brain-only fitting room.  External
+    help is only selected after that attempt fails, and the downgrade reason is
+    kept explicit so callers can persist it in their own ledger.
+    """
+
+    normalized_risk = (risk or "low").strip().lower()
+    if normalized_risk in {"low", "safe", "routine", "small"} and not brain_only_failed:
+        return HandsWeaningDecision(
+            use_brain_only=True,
+            reason="weaning_default_low_risk_brain_only_first",
+        )
+
+    reason = failure_reason.strip() if failure_reason else ""
+    if brain_only_failed:
+        reason = reason or "brain_only_attempt_failed"
+    elif normalized_risk not in {"low", "safe", "routine", "small"}:
+        reason = f"risk_not_low:{normalized_risk}"
+    else:
+        reason = "external_fallback_requested"
+
+    return HandsWeaningDecision(
+        use_brain_only=False,
+        reason="weaning_default_external_fallback",
+        downgrade_reason=reason,
+    )
+
+
+def run_hands_default(
+    brain_only: Callable[[], Any],
+    external: Callable[[str], Any],
+    *,
+    intent: str = "",
+    risk: str = "low",
+    record: Callable[[str], None] | None = None,
+) -> Any:
+    """Run hands default route: brain-only first for low-risk edits, else fallback."""
+
+    first = hands_default_decision(intent=intent, risk=risk)
+    if first.use_brain_only:
+        try:
+            return brain_only()
+        except Exception as exc:  # noqa: BLE001 - fallback must preserve downgrade reason
+            downgrade = hands_default_decision(
+                intent=intent,
+                risk=risk,
+                brain_only_failed=True,
+                failure_reason=f"{exc.__class__.__name__}: {exc}",
+            )
+            if record is not None:
+                record(downgrade.downgrade_reason)
+            return external(downgrade.downgrade_reason)
+
+    if record is not None:
+        record(first.downgrade_reason)
+    return external(first.downgrade_reason)
+
 import argparse
 import dataclasses
 import json
