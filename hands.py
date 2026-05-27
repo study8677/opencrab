@@ -7,6 +7,10 @@ opencrab 的手 🦀 —— 雇佣 Claude Code / Codex 当爪子，并安全地�
   merge   : 自测通过才合并到本地主干(不 push)
   publish : 自测通过才合并并 push 到公开仓(完全自主，"公开大海")
 
+自生手默认优先：每次动手先走 brain-only 补丁(brain 凭招式库修语法级真伤、过补丁契约)，
+brain 修不动或不适用才**降级**雇外援，并把降级原因记进 result["brain_reason"]。
+断奶要从默认路径开始——能自己修的，绝不花钱雇爪子。
+
 关键的免疫系统：它改完自己后，先自测「还能不能正常启动」——
 通过才合并；不通过就自动回滚、丢弃这次改动，保住自己(断肢再生)。
 git 始终攥在 opencrab 手里；爪子只拿到「改文件」的最小权限。
@@ -54,7 +58,8 @@ def _dry_run_preview(task: str, *, repo: pathlib.Path, branch: str, base: str,
 
     # 执行路径：把 integrate 模式下会一步步发生什么写清楚
     steps = [f"开新分支 {branch}（从 {base}）",
-             f"雇佣 {executor} 在分支上改文件（预算 ${budget_usd}，仅 Read/Edit/Write/Glob/Grep，禁 Bash/联网）",
+             "自生手优先：先走 brain-only 补丁（招式库修语法级真伤，过补丁契约，不雇外援、不花钱）",
+             f"brain 修不动 → 降级雇佣 {executor} 改文件（预算 ${budget_usd}，仅 Read/Edit/Write/Glob/Grep，禁 Bash/联网），并记录降级原因",
              "opencrab 亲自 git add -A 并提交改动到分支"]
     if integrate == "branch":
         steps.append("停在分支上养着，不合并、不 push")
@@ -69,7 +74,7 @@ def _dry_run_preview(task: str, *, repo: pathlib.Path, branch: str, base: str,
     # 风险点：越靠后越危险，预演的价值就在这里
     risks: list[str] = []
     if not available:
-        risks.append(f"⛔ 未找到 {executor} CLI —— 实跑会直接放弃，无任何改动")
+        risks.append(f"⛔ 未找到 {executor} CLI —— brain 修不动时无外援可降级，那类任务将放弃、无改动")
     if executor == "codex":
         risks.append("⚠️ codex 执行器仍是实验性，sandbox 行为未充分验证")
     if integrate == "publish":
@@ -107,6 +112,72 @@ def _self_test(repo: pathlib.Path) -> tuple[bool, str]:
     return True, "自测通过：改完还能正常启动"
 
 
+def _brain_attempt(repo: pathlib.Path) -> dict:
+    """自生手优先：先让 brain 独立产「brain-only 补丁」，一律不雇外援。
+
+    brain 的招式库(weaning_trial.TACTICS)只覆盖**语法级真伤**(补冒号 / print 括号等)——
+    能修就自己修；本就没有语法伤(特性级改动它不会)或修不动，就老实记下原因，交回上层降级外援。
+    断奶要从默认路径开始：先走这里，失败才花钱雇爪子。
+    返回 {ok, reason, trace, files}。
+    """
+    try:
+        import weaning_trial
+        import patchcontract
+    except Exception as e:   # noqa: BLE001 —— brain 模块缺席就如实降级，绝不假装能自修
+        return {"ok": False, "reason": f"brain 模块缺席({type(e).__name__})，无法自修",
+                "trace": [], "files": []}
+
+    broken: list[tuple[pathlib.Path, str, SyntaxError]] = []
+    for p in sorted(repo.glob("*.py")):
+        try:
+            src = p.read_text(encoding="utf-8", errors="replace")
+            compile(src, p.name, "exec")   # 只编译不 exec：探伤安全，绝不跑真模块的副作用
+        except SyntaxError as e:
+            broken.append((p, src, e))
+        except OSError:
+            continue
+    if not broken:
+        return {"ok": False, "reason": "无语法级真伤可修——brain 招式库不覆盖特性级改动",
+                "trace": [], "files": []}
+
+    trace: list[str] = []
+    fixed_files: list[str] = []
+    for p, src, exc in broken:
+        cur, cur_exc, healed = src, exc, False
+        for _ in range(6):
+            applied = False
+            for tactic in weaning_trial.TACTICS:
+                cand = tactic(cur, cur_exc)
+                if not cand or cand == cur:
+                    continue
+                verdict = patchcontract.validate(cur, cand)   # 拒收闸：畸形/越界(重写式大改)当场拒
+                if not verdict.ok:
+                    trace.append(f"{p.name}: {tactic.__name__} 被契约拒收({verdict.code})")
+                    continue
+                trace.append(f"{p.name}: {tactic.__name__} ⮕ {type(cur_exc).__name__}")
+                cur, applied = cand, True
+                break
+            if not applied:
+                break
+            try:
+                compile(cur, p.name, "exec")
+                healed = True
+                break
+            except SyntaxError as e2:
+                cur_exc = e2
+        if healed:
+            p.write_text(cur, encoding="utf-8")
+            fixed_files.append(p.name)
+        else:   # 无招可解：本文件回滚原样(不落盘)，交回上层降级外援
+            trace.append(f"{p.name}: 无招可解 {type(cur_exc).__name__}")
+            return {"ok": False,
+                    "reason": f"brain 修不动 {p.name}({type(cur_exc).__name__})",
+                    "trace": trace, "files": fixed_files}
+    return {"ok": True,
+            "reason": f"brain 独立修好 {len(fixed_files)} 个语法伤：{', '.join(fixed_files)}",
+            "trace": trace, "files": fixed_files}
+
+
 def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
               budget_usd: float = 0.5, dry_run: bool = False,
               integrate: str = "branch") -> dict:
@@ -121,10 +192,6 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
         return _dry_run_preview(task, repo=repo, branch=branch, base=base,
                                 executor=executor, budget_usd=budget_usd,
                                 integrate=integrate, available=available)
-    if not available:
-        return {"ok": False, "branch": branch, "executor": executor,
-                "available": available, "changed": False, "integrate": integrate,
-                "note": f"[未找到 {executor} CLI] 本应在分支 {branch} 上（{integrate} 模式）实施：{task[:70]}"}
 
     _git(repo, "checkout", "-f", base)   # 先强制回主干：确保从 main 开枝、改完也回 main，不在 crab 分支上越积越偏
     base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()   # 开枝前 base 的 HEAD：补丁解释层据此算回滚点
@@ -133,24 +200,42 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
                 "integrate": integrate, "note": "开分支失败(可能重名)。"}
 
     result = {"branch": branch, "base": base, "executor": executor,
-              "integrate": integrate, "changed": False, "ok": False,
-              "task": task, "base_sha": base_sha}   # task/base_sha 供 patchnote 写「依据」与「回滚点」
+              "available": available, "integrate": integrate, "changed": False,
+              "ok": False, "task": task, "base_sha": base_sha}   # task/base_sha 供 patchnote 写「依据」与「回滚点」
     try:
-        # 1) 雇佣爪子改文件：只给「改文件」最小权限，不碰 git / Bash / 联网
-        cmd = _plan_cmd(task, executor, budget_usd)  # 与预演看到的命令完全一致
-        proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, timeout=900)
-        result["exit"] = proc.returncode
+        # 1) 自生手优先：先走 brain-only 补丁，失败才降级外援，并记录原因（断奶从默认路径开始）
+        brain = _brain_attempt(repo)
+        result["brain_reason"] = brain["reason"]
+        result["brain_trace"] = brain["trace"]
+        if brain["ok"]:
+            result["mode"] = "brain"   # brain 独立动手，不雇外援、不花一分钱
+        else:
+            # 降级外援：brain 没解，记下原因，再雇爪子
+            if not available:          # 连外援都没有 → 无路可走，丢弃空分支保持干净
+                result["mode"] = "downgrade-unavailable"
+                _git(repo, "checkout", "-f", base)
+                _git(repo, "branch", "-D", branch)
+                result["note"] = (f"[brain 未解：{brain['reason']}；且未找到 {executor} CLI] "
+                                  f"本应（{integrate} 模式）实施：{task[:70]}")
+                return result
+            result["mode"] = "hired"
+            # 雇佣爪子改文件：只给「改文件」最小权限，不碰 git / Bash / 联网
+            cmd = _plan_cmd(task, executor, budget_usd)  # 与预演看到的命令完全一致
+            proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, timeout=900)
+            result["exit"] = proc.returncode
 
         # 2) opencrab 亲自把改动提交到分支
         _git(repo, "add", "-A")
         diffstat = _git(repo, "diff", "--cached", "--stat").stdout.strip()
         result["diffstat"] = diffstat
         if not diffstat:
-            result["note"] = "爪子没做出任何改动。"
+            result["note"] = ("brain 与外援都没做出任何改动。" if result["mode"] == "brain"
+                              else "爪子没做出任何改动。")
             return result
         result["changed"] = True
+        hand = "brain-only 自生手" if result["mode"] == "brain" else f"外援 {executor}"
         _git(repo, "commit", "-m", f"🦀 self-evolve: {task[:60]}",
-             "-m", "opencrab 自主提出并实施。")
+             "-m", f"opencrab 自主提出并实施（{hand}）。")
 
         result["patch_sha"] = _git(repo, "rev-parse", "HEAD").stdout.strip()  # 分支上这条提交：回滚点之一
 
