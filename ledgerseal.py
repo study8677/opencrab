@@ -21,6 +21,10 @@
   · ✂️ 删尾     —— 现在的行数比封印时少,有记录被删 / 文件被截断。
   · 👻 失踪     —— 封印过的账本如今整本不见了。
   · ⚪ 未封印   —— 账本在,却从没立过基准,无从比对(首次需 `--seal` 建基)。
+  · ⏳ 旧版本   —— 基准是旧封印格式(_SEED 换代),不报篡改,提示 `--seal` 迁移重封。
+
+冷启动三态由此各得其位:空账本→⚪未封印(`--seal` 自建基准)、旧基准→⏳旧版本
+(`--seal` 迁移重封)、被改过→🔴篡改(拒伪,非 `--force` 不洗白)。
 
 判准:账本封印**只读账本、只算哈希、只比对基准**,绝不改写任何一本被封的 JSONL。
 为防「先篡改再重封印」把脏数据洗白,`--seal` 在历史前缀已 🔴篡改 / ✂️删尾 时**拒绝
@@ -56,8 +60,13 @@ if str(REPO_ROOT) not in sys.path:
 STATE = REPO_ROOT / "state"
 SEAL_PATH = STATE / "ledgerseal" / "seals.json"
 
-# 链的盐:换一个版本就让全部旧封印作废(防跨版本误比对)。
-_SEED = "opencrab-ledgerseal-v1"
+# 链的盐 / 封印格式版本:换一个版本,旧封印不再当作可直接比对的基准。
+# 不再「静默作废」——而是认成「⏳ 旧版本」(见 ST_STALE),提示 `--seal` 迁移重封,
+# 免得把一次正当的换代误报成「🔴 篡改」吓自己。封印里记下立基时的版本(version),
+# 校验时:删尾(行数变少)与版本无关,先揪;行数够再比版本,不一致即判旧版本,
+# 不去重算链头(用新算法算注定对不上,白报篡改)。
+_SEED_V1 = "opencrab-ledgerseal-v1"   # 最初的封印格式;预版本化的老基准没记 version,一律当作它
+_SEED = _SEED_V1                      # 当前格式;将来换代只改这一行,老基准会如实判「旧版本」去迁移
 
 # ── 被封的三本账本 ────────────────────────────────────────────────────────
 # 审计按天分文件,运行时动态展开(audit/<日期>);证据与记忆各一本。
@@ -136,11 +145,13 @@ ST_TAMPER = "tamper"      # 🔴 历史某行被改 / 插
 ST_TRUNC = "truncated"    # ✂️ 行数比封印时少(删尾 / 截断)
 ST_MISSING = "missing"    # 👻 封印过的账本整本失踪
 ST_UNSEALED = "unsealed"  # ⚪ 账本在,却没立过基准
+ST_STALE = "stale"        # ⏳ 封印格式换代:基准是旧版本,需 `--seal` 迁移重封
 
 _ICON = {ST_INTACT: "🔒", ST_TAMPER: "🔴", ST_TRUNC: "✂️",
-         ST_MISSING: "👻", ST_UNSEALED: "⚪"}
+         ST_MISSING: "👻", ST_UNSEALED: "⚪", ST_STALE: "⏳"}
 
-# 算「断链」(需报警、让退出码非零)的状态。
+# 算「断链」(需报警、让退出码非零)的状态。旧版本(STALE)是正当换代、不是断链,
+# 故不入此集——它只提示迁移,绝不把退出码弄红、也不阻断蜕壳。
 _ALARM = {ST_TAMPER, ST_TRUNC, ST_MISSING}
 
 
@@ -169,7 +180,7 @@ class Report:
 
 
 def verify_one(key: str, path: pathlib.Path, seals: dict[str, dict]) -> Report:
-    """比对一本账本与其封印基准,定出五种状态之一。"""
+    """比对一本账本与其封印基准,定出六种状态之一。"""
     lines = _read_lines(path)
     seal = seals.get(key)
 
@@ -181,15 +192,26 @@ def verify_one(key: str, path: pathlib.Path, seals: dict[str, dict]) -> Report:
 
     sealed_count = int(seal.get("count", 0))
     sealed_head = str(seal.get("head", ""))
+    # 旧封印没记 version——它们立基时只有 v1,故缺省即认作 v1(而非「当前版本」):
+    # 将来 _SEED 换代时,这些老基准会如实判成「旧版本」去迁移,而不会被误报成篡改。
+    sealed_version = str(seal.get("version", _SEED_V1))
 
     if lines is None:
         return Report(key, ST_MISSING, 0, sealed_count,
                       f"封印过 {sealed_count} 行,如今整本账本失踪了。")
 
     now = len(lines)
+    # 删尾是「行数变少」,与链算法版本无关——任何版本都先揪出来,绝不能被「旧版本」掩护洗白。
     if now < sealed_count:
         return Report(key, ST_TRUNC, now, sealed_count,
                       f"封印时 {sealed_count} 行,现在只剩 {now} 行——有记录被删 / 文件被截断。")
+
+    # 行数够了:若基准是旧封印格式,用当前链算法重算注定对不上,故不比对、判旧版本待迁移。
+    # (删尾已在上面拦下;此处只是「无法用新算法证明历史前缀」,不等于篡改。)
+    if sealed_version != _SEED:
+        return Report(key, ST_STALE, now, sealed_count,
+                      f"基准是旧封印版本（{sealed_version} ≠ 当前 {_SEED}）——"
+                      "链算法换代,需 `--seal` 迁移重封后才认得出篡改。")
 
     # 行数够:重算封印那一刻的前缀(前 sealed_count 行)链头,与基准比对。
     if chain_head(lines, upto=sealed_count) != sealed_head:
@@ -213,6 +235,7 @@ def seal(force: bool = False) -> tuple[list[Report], list[str]]:
 
     为防「先篡改再重封印」洗白脏数据:历史前缀已篡改 / 删尾的账本默认**拒绝重封**,
     除非 force=True 明示认账。失踪的账本无从封印(直接跳过)。
+    旧版本(ST_STALE)是正当换代,直接重封即完成迁移——这正是冷启动「旧基准 → 迁移」那条路。
     """
     seals = _load_seals()
     sealed_keys: list[str] = []
@@ -226,6 +249,7 @@ def seal(force: bool = False) -> tuple[list[Report], list[str]]:
         seals[key] = {
             "count": len(lines),
             "head": chain_head(lines),
+            "version": _SEED,
             "sealed_at": datetime.datetime.now().isoformat(timespec="seconds"),
         }
         sealed_keys.append(key)
@@ -305,7 +329,10 @@ def main(argv: list[str] | None = None) -> None:
         if not args.quiet:
             grew = [r for r in reports if r.grew]
             unsealed = [r for r in reports if r.state == ST_UNSEALED]
-            if unsealed:
+            stale = [r for r in reports if r.state == ST_STALE]
+            if stale:
+                print(f"⏳ {len(stale)} 本账本的基准是旧封印版本,`--seal` 迁移重封到当前格式,往后才认得出篡改。")
+            elif unsealed:
                 print(f"⚪ {len(unsealed)} 本账本尚未封印,`--seal` 立个基准,往后才认得出篡改。")
             elif grew:
                 print(f"🔒 历史完好;{len(grew)} 本有合规新增,`--seal` 重新固定即可。")
