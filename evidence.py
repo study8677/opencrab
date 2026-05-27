@@ -291,6 +291,18 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="shadowscribe",
+        # brain 补丁影子落盘:断奶第一课——给一份好端端的文档/JSON,brain 亲手誊出一处低风险小修
+        # (JSON 规范化/文档去尾空白),只写隔离的临时影子副本,真身全程一字节不碰。与 fitroom 互补:
+        # 一个管「给定候选→过闸→原子写回真身」,一个管「自己生成候选→保义→只落影子、永不碰真身」。
+        # 复跑命令验证 JSON/文档各能亲手誊出规整小修、保义闸拦得住语义漂移、源码与坏 JSON 老实弃权、
+        # 且每次誊完真身 sha256 一字不差——先把「我能写」与「我不伤真身」拆开各证一遍,才谈断奶。
+        asserts="brain 能亲手给文档/JSON 誊出一处保义的低风险小修,只写影子副本,真身全程字节不变",
+        argv=_PY + ["shadowscribe.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 
