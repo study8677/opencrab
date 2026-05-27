@@ -13,6 +13,7 @@ class ConflictArbitrator:
     - conflict key: action target/path/file/name/id
     - conflict: same target with different operation/value signatures
     - winner: highest value, then lower risk, fresher evidence, score, input order, stable plan id
+    - outcome: adopt, defer, or verify from evidence strength/freshness/risk and close-call margins
     - output: JSON-serialisable audit dict
     """
 
@@ -200,6 +201,28 @@ class ConflictArbitrator:
                 scores.append(0.5)
         return round(sum(scores) / float(len(scores)), 6)
 
+    @classmethod
+    def _decision_outcome(cls, winner: Dict[str, Any], runner_up: Optional[Dict[str, Any]], contract: Dict[str, Any]) -> Tuple[str, str]:
+        """Classify a conflict decision as adopt, defer, or verify."""
+        min_verify_evidence = cls._as_float(contract.get("min_verify_evidence", 0.0), 0.0)
+        min_verify_freshness = cls._as_float(contract.get("min_verify_freshness", 0.2), 0.2)
+        max_adopt_risk = cls._as_float(contract.get("max_adopt_risk", 0.75), 0.75)
+        defer_value_margin = cls._as_float(contract.get("defer_value_margin", 0.05), 0.05)
+        defer_score_margin = cls._as_float(contract.get("defer_score_margin", 5.0), 5.0)
+
+        if winner["evidence_score"] <= min_verify_evidence:
+            return "verify", "winning plan lacks positive evidence"
+        if winner["freshness_score"] < min_verify_freshness:
+            return "verify", "winning evidence is stale or missing freshness"
+        if winner["risk"] > max_adopt_risk:
+            return "verify", "winning plan risk exceeds adoption threshold"
+        if runner_up is not None:
+            value_gap = abs(winner["value"] - runner_up["value"])
+            score_gap = abs(winner["score"] - runner_up["score"])
+            if value_gap <= defer_value_margin and score_gap <= defer_score_margin:
+                return "defer", "top contenders are too close for autonomous adoption"
+        return "adopt", "winner clears evidence, freshness, risk, and margin gates"
+
     def _normalise_plan(self, plan: Dict[str, Any], index: int) -> Dict[str, Any]:
         if not isinstance(plan, dict):
             plan = {"plan": plan}
@@ -279,6 +302,8 @@ class ConflictArbitrator:
         by_target: Dict[str, List[Dict[str, Any]]] = {}
         selected_actions: List[Dict[str, Any]] = []
         rejected_actions: List[Dict[str, Any]] = []
+        deferred_actions: List[Dict[str, Any]] = []
+        verification_actions: List[Dict[str, Any]] = []
         conflicts: List[Dict[str, Any]] = []
         decisions: List[Dict[str, Any]] = []
         audit_trail: List[Dict[str, Any]] = []
@@ -318,6 +343,7 @@ class ConflictArbitrator:
             ranked = sorted(contenders, key=lambda x: (-x["value"], x["risk"], -x["freshness_score"], -x["evidence_score"], -x["score"], x["input_order"], x["plan_id"], x["action_index"]))
             winner = ranked[0]
             losers = ranked[1:]
+            outcome, outcome_reason = self._decision_outcome(winner, ranked[1] if len(ranked) > 1 else None, contract)
             conflict = {
                 "target": target,
                 "reason": "same target has incompatible action signatures",
@@ -344,8 +370,12 @@ class ConflictArbitrator:
             decision = {
                 "target": target,
                 "policy": "value_then_low_risk_then_fresh_evidence_then_score",
+                "outcome": outcome,
+                "outcome_reason": outcome_reason,
                 "winner_plan_id": winner["plan_id"],
-                "rejected_plan_ids": [item["plan_id"] for item in losers],
+                "rejected_plan_ids": [item["plan_id"] for item in losers] if outcome == "adopt" else [],
+                "deferred_plan_ids": [item["plan_id"] for item in ranked] if outcome == "defer" else [],
+                "verification_plan_ids": [item["plan_id"] for item in ranked] if outcome == "verify" else [],
                 "winner_value": winner["value"],
                 "winner_risk": winner["risk"],
                 "winner_evidence_score": winner["evidence_score"],
@@ -357,22 +387,40 @@ class ConflictArbitrator:
             decisions.append(decision)
             audit_trail.append({
                 "target": target,
-                "event": "conflict_resolved",
+                "event": "conflict_%s" % outcome,
                 "policy": decision["policy"],
+                "outcome": outcome,
+                "outcome_reason": outcome_reason,
                 "winner_plan_id": winner["plan_id"],
                 "winner_value": winner["value"],
                 "winner_risk": winner["risk"],
                 "winner_freshness_score": winner["freshness_score"],
                 "winner_evidence_score": winner["evidence_score"],
                 "rejected_plan_ids": decision["rejected_plan_ids"],
+                "deferred_plan_ids": decision["deferred_plan_ids"],
+                "verification_plan_ids": decision["verification_plan_ids"],
             })
-            selected_actions.append(winner)
-            rejected_actions.extend(losers)
+            if outcome == "adopt":
+                selected_actions.append(winner)
+                rejected_actions.extend(losers)
+            elif outcome == "defer":
+                deferred_actions.extend(ranked)
+            else:
+                verification_actions.extend(ranked)
 
+        decision_counts = {
+            "adopt": sum(1 for item in decisions if item.get("outcome") == "adopt"),
+            "defer": sum(1 for item in decisions if item.get("outcome") == "defer"),
+            "verify": sum(1 for item in decisions if item.get("outcome") == "verify"),
+        }
+        status = "no_conflicts"
+        if conflicts:
+            status = "needs_verification" if decision_counts["verify"] else ("deferred" if decision_counts["defer"] else "conflicts_resolved")
         audit = {
             "schema_version": self.ARBITRATION_SCHEMA_VERSION,
-            "status": "conflicts_resolved" if conflicts else "no_conflicts",
+            "status": status,
             "contract": self._jsonable(contract),
+            "decision_counts": decision_counts,
             "plan_count": len(normalised),
             "policy": "value_then_low_risk_then_fresh_evidence_then_score",
             "audit_trail": audit_trail,
@@ -421,6 +469,30 @@ class ConflictArbitrator:
                     "raw_action": item["raw_action"],
                 }
                 for item in sorted(rejected_actions, key=lambda x: (x["target"], x["input_order"], x["action_index"], x["plan_id"]))
+            ],
+            "deferred_actions": [
+                {
+                    "plan_id": item["plan_id"],
+                    "strategy": item["strategy"],
+                    "target": item["target"],
+                    "operation": item["operation"],
+                    "signature": item["signature"],
+                    "score": item["score"],
+                    "raw_action": item["raw_action"],
+                }
+                for item in sorted(deferred_actions, key=lambda x: (x["target"], x["input_order"], x["action_index"], x["plan_id"]))
+            ],
+            "verification_actions": [
+                {
+                    "plan_id": item["plan_id"],
+                    "strategy": item["strategy"],
+                    "target": item["target"],
+                    "operation": item["operation"],
+                    "signature": item["signature"],
+                    "score": item["score"],
+                    "raw_action": item["raw_action"],
+                }
+                for item in sorted(verification_actions, key=lambda x: (x["target"], x["input_order"], x["action_index"], x["plan_id"]))
             ],
             "recheck_command": (
                 "python -c \"import json; "
