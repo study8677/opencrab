@@ -28,6 +28,7 @@
     python userlab.py --run            # 端到端跑全部旅程，看每种人此刻走不走得通
     python userlab.py --run newcomer   # 只跑某一种人的旅程
     python userlab.py --persona NAME   # 只看某条旅程的步骤(不执行)
+    python userlab.py --verify         # 自检回放引擎：「卡在第几步」这条断点逻辑还准不准
     python userlab.py --quiet          # 只在有旅程走不通时说话(适合钩子 / CI)
     python userlab.py --json           # 机读：导出旅程定义 +（含 --run 时）逐步结果
 
@@ -197,6 +198,64 @@ def _find(persona: str) -> Journey | None:
     return None
 
 
+# ── 回放引擎自检：把「卡在第几步」这条断点逻辑钉成回归 🛤️ ────────────────
+# 整条回放的命根子，是 walk() 能不能**准确地停在第一处失败、并报对是哪一步卡的**：
+# 报错了步号，治接缝就被引去治错地方；该停时不停、硬跑后面的步，又会用一堆「其实根本
+# 到不了」的失败淹没真正的卡点。这套定位逻辑此前没有任何回归守着——谁哪天改坏了 walk
+# 的短路或步号计数，三条真旅程也未必当场翻红，于是它**隐形**。
+#
+# 这里用一组**合成旅程**喂给真正的 walk()：每步只绑一条退出码写死的命令(0=通/非0=卡)，
+# 于是结果完全可预期。断言 walk() 在该停的那步停(只跑到那步、不再往后)、且 blocked_at
+# 正是那步——把「首个断点」的定位钉死成自检，不碰真旅程、无副作用、纯标准库可当场复跑。
+def _exit_step(action: str, code: int) -> Step:
+    """造一条「退出码写死」的合成步骤：code=0 当场就通，非 0 当场就卡。"""
+    return Step(action, _PY + ["-c", f"import sys; sys.exit({code})"])
+
+
+# 每条样例：(名字, 各步退出码, 期望卡在第几步(0=全通), 期望真正跑到的步数)。
+# 覆盖断点定位的关键分支：全通、第一步就卡、中途卡、末步卡，以及单步两种结局。
+REPLAY_SAMPLES: tuple[tuple[str, tuple[int, ...], int, int], ...] = (
+    ("三步全通——一路走到尾",        (0, 0, 0), 0, 3),
+    ("第一步就卡——立刻停住",        (1, 0, 0), 1, 1),
+    ("中途第二步卡——停在卡点",      (0, 1, 0), 2, 2),
+    ("末步才卡——前两步通了也得报",  (0, 0, 1), 3, 3),
+    ("单步旅程·通",                (0,),      0, 1),
+    ("单步旅程·卡",                (1,),      1, 1),
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class ReplayCheck:
+    """一条回放自检：合成旅程跑完后，断点定位是否和预期一字不差。"""
+    name: str
+    expected_blocked_at: int
+    got_blocked_at: int
+    expected_ran: int           # 期望真正跑到的步数(短路后不应再跑后续步)
+    got_ran: int
+
+    @property
+    def ok(self) -> bool:
+        return (self.got_blocked_at == self.expected_blocked_at
+                and self.got_ran == self.expected_ran)
+
+    def to_meta(self) -> dict:
+        return {"name": self.name, "ok": self.ok,
+                "expected_blocked_at": self.expected_blocked_at,
+                "got_blocked_at": self.got_blocked_at,
+                "expected_ran": self.expected_ran, "got_ran": self.got_ran}
+
+
+def verify() -> list[ReplayCheck]:
+    """跑回放引擎自检：每条合成旅程走完后，walk() 是否准确报出「卡在第几步、跑到第几步」。"""
+    out: list[ReplayCheck] = []
+    for name, codes, exp_block, exp_ran in REPLAY_SAMPLES:
+        steps = [_exit_step(f"第{i}步", c) for i, c in enumerate(codes, start=1)]
+        j = Journey("__verify__", "🧪", name, name, steps)
+        r = walk(j)
+        out.append(ReplayCheck(name, exp_block, r.blocked_at, exp_ran, len(r.steps)))
+    return out
+
+
 # ── 展示 ──────────────────────────────────────────────────────────────
 def _print_journeys(journeys: list[Journey]) -> None:
     print(f"🧪 opencrab 用户实验室（{len(journeys)} 条端到端旅程）\n")
@@ -234,6 +293,21 @@ def _print_results(results: list[JourneyResult]) -> None:
         print(f"⚠️  {len(bad)} 种人此刻会卡住：{'、'.join(bad)}（顺着卡住那步去治接缝）")
 
 
+def _print_replay(checks: list[ReplayCheck]) -> None:
+    bad = [c for c in checks if not c.ok]
+    print(f"🛤️ 回放引擎自检（{len(checks)} 条合成旅程喂给真正的 walk()）\n")
+    for c in checks:
+        mark = "✓" if c.ok else "✗"
+        print(f"  {mark} {c.name}")
+        if not c.ok:
+            print(f"      期望：卡在第 {c.expected_blocked_at} 步、跑到第 {c.expected_ran} 步")
+            print(f"      实际：卡在第 {c.got_blocked_at} 步、跑到第 {c.got_ran} 步")
+    if bad:
+        print(f"\n⚠️  {len(bad)} 条断点定位漂了——walk() 的短路/步号逻辑被改坏了，回去对照。")
+    else:
+        print("\n✅ 每条断点都停在该停的那步——回放引擎此刻报得准。")
+
+
 def manifest(run: bool, journeys: list[Journey]) -> dict:
     """导出纯数据：旅程定义；若 run=True 还附上逐步端到端结果。"""
     out: dict = {"journeys": [j.to_meta() for j in journeys]}
@@ -248,11 +322,23 @@ def main(argv: list[str] | None = None) -> None:
                     help="端到端跑旅程：不带名=全部，带名=只跑该种人")
     ap.add_argument("--persona", metavar="NAME",
                     help="只看某种人的旅程步骤(不执行)")
+    ap.add_argument("--verify", action="store_true",
+                    help="自检回放引擎的断点定位(合成旅程→期望卡在第几步)")
     ap.add_argument("--quiet", action="store_true",
                     help="只在有旅程走不通时输出(适合钩子 / CI)")
     ap.add_argument("--json", action="store_true",
                     help="导出机读：旅程定义 +（含 --run 时）逐步结果")
     args = ap.parse_args(argv)
+
+    # 回放引擎自检：独立一条路，只关心 walk() 的断点定位准不准，不碰真旅程
+    if args.verify:
+        checks = verify()
+        all_ok = all(c.ok for c in checks)
+        if args.json:
+            print(json.dumps([c.to_meta() for c in checks], ensure_ascii=False, indent=2))
+        elif not (args.quiet and all_ok):
+            _print_replay(checks)
+        sys.exit(0 if all_ok else 1)
 
     # 选定要操作的旅程集合(--run NAME / --persona NAME 都可定位单条)
     target = args.run if (args.run and args.run != "*") else args.persona

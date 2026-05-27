@@ -31,6 +31,7 @@ journal / state、不改任何文件。任一处痕迹读不到，那一维信�
     python usageheat.py --probe     # 额外实跑每扇门的 --help，把推不开的标为发烫
     python usageheat.py --days 14   # 审计回溯窗口（默认 7 天）
     python usageheat.py --cold      # 只列冰封器官（久未问津的旧壳）
+    python usageheat.py --journeys  # 热旅程联动：挑最常用器官 ⨉ 证据，荐出该先复验的几条
     python usageheat.py --quiet     # 只在有发烫器官时说话（适合钩子 / CI）
     python usageheat.py --json      # 机读：导出每个器官的体温、各维信号与最近痕迹
 
@@ -126,6 +127,15 @@ def _audit_mentions(days: int) -> dict[str, tuple[int, str]]:
                 n, last = out.get(mod, (0, ""))
                 out[mod] = (n + 1, max(last, ts))
     return out
+
+
+def mentions_by_module(days: int = 7) -> dict[str, int]:
+    """每个模块近 days 天被点名的次数——「真实常用度」的单一信号源。
+
+    公开给 evidence 巡逻、canary 等做「先盯真实常用处」的权重；审计读不到则回空
+    （常用度记为「未知」，调用方自行退化，绝不臆测）。
+    """
+    return {mod: n for mod, (n, _last) in _audit_mentions(days).items()}
 
 
 # ── 🧾 证据维：每个模块对应证据声明的复验新鲜度 ────────────────────────────
@@ -256,8 +266,56 @@ def summarize(heats: list[Heat]) -> dict[str, int]:
     return out
 
 
+# ── 🔥 热旅程：真实最常用的器官 ⨉ 它们的证据新鲜度 ────────────────────────
+# 「强弱应先盯真实常用处」——不是堆新器官，而是先看被反复用到的旧器官证据凉没凉。
+# 热旅程 = 近窗口里被点名最多的前几个器官；把它们对齐证据账本，挑出「常用但证据已不新鲜」
+# 的，正是该优先触发 evidence/canary 复验的地方。usageheat 只观测、只挑、只荐命令，绝不替谁去跑。
+HOT_JOURNEYS_TOP = 5      # 默认取近窗口里最常用的前几个器官当热旅程
+_COLD_STATES = ("stale", "broken", "unproven")  # 证据不新鲜：过期/失守/未证
+
+
+@dataclasses.dataclass
+class Journey:
+    """一条热旅程：某个真实常用器官 + 它当前的证据新鲜度。"""
+    name: str
+    mentions: int                    # 近窗口里被点名次数（越高越常用）
+    verify_state: str | None         # fresh/stale/broken/unproven；None=没有对应证据声明
+    age_days: float | None
+
+    @property
+    def has_claim(self) -> bool:
+        return self.verify_state is not None
+
+    @property
+    def needs_reverify(self) -> bool:
+        """常用且证据已不新鲜（过期/失守/未证）= 该优先复验的热旅程。"""
+        return self.verify_state in _COLD_STATES
+
+    def to_meta(self) -> dict:
+        return {"name": self.name, "mentions": self.mentions,
+                "verify_state": self.verify_state, "age_days": self.age_days,
+                "has_claim": self.has_claim, "needs_reverify": self.needs_reverify}
+
+
+def hot_journeys(days: int = 7, top_n: int = HOT_JOURNEYS_TOP) -> list[Journey]:
+    """挑近 days 天「真实最常用」的前 top_n 个器官，对齐各自证据新鲜度。
+
+    按点名次数降序、同次数按名定序。审计读不到则回空——没有真实使用信号时不臆测谁热。
+    """
+    mentions = _audit_mentions(days)
+    if not mentions:
+        return []
+    fresh = _evidence_freshness()
+    ranked = sorted(mentions.items(), key=lambda kv: (-kv[1][0], kv[0]))
+    out: list[Journey] = []
+    for name, (n, _last) in ranked[:max(0, top_n)]:
+        vstate, age = fresh.get(name, (None, None))
+        out.append(Journey(name=name, mentions=n, verify_state=vstate, age_days=age))
+    return out
+
+
 def manifest(days: int = 7, probe: bool = False) -> dict:
-    """机读：全器官画像 + 各档计数 + 发烫名单。"""
+    """机读：全器官画像 + 各档计数 + 发烫名单 + 热旅程联动清单。"""
     heats = build(days=days, probe=probe)
     counts = summarize(heats)
     hot = [h.name for h in heats if h.temp == TEMP_HOT]
@@ -266,6 +324,7 @@ def manifest(days: int = 7, probe: bool = False) -> dict:
         "counts": counts, "hot": hot,
         "cold": [h.name for h in heats if h.temp == TEMP_COLD],
         "heats": [h.to_meta() for h in heats],
+        "journeys": [j.to_meta() for j in hot_journeys(days=days)],
     }
 
 
@@ -302,6 +361,33 @@ def _render(heats: list[Heat], days: int, probed: bool, cold_only: bool) -> str:
     return "\n".join(L)
 
 
+def _render_journeys(journeys: list[Journey], days: int) -> str:
+    """热旅程联动视图：真实最常用器官 ⨉ 证据新鲜度，把该优先复验的挑出来荐命令。"""
+    L = [f"🔥 opencrab 热旅程联动 —— 近 {days} 天被点名最多的器官 ⨉ 证据新鲜度", ""]
+    if not journeys:
+        L.append("（审计读不到，没有真实使用信号——无从挑热旅程，先攒几次心跳再来。）")
+        return "\n".join(L)
+
+    _mark = {"fresh": "🟢新鲜", "stale": "🟡过期", "broken": "🔴失守", "unproven": "⚪未证"}
+    for j in journeys:
+        state = _mark.get(j.verify_state, "—无证据声明")
+        age = f"，上次复验 {j.age_days:.0f} 天前" if j.age_days is not None else ""
+        L.append(f"   {j.name}.py — 近窗口被点名 {j.mentions} 次｜证据 {state}{age}")
+
+    reverify = [j for j in journeys if j.needs_reverify]
+    L.append("")
+    if reverify:
+        names = "、".join(f"{j.name}.py" for j in reverify)
+        L.append(f"⚠️  {len(reverify)} 条最常用旅程证据已不新鲜：{names}")
+        L.append("    强弱应先盯真实常用处——建议先在这几条上触发复验：")
+        for j in reverify:
+            L.append(f"      · python evidence.py --verify {j.name}")
+        L.append("    再跑 `python canary.py` 在最热旅程上快筛一遍，确认放量安全。")
+    else:
+        L.append("🦀 最常用的几条旅程证据都还新鲜，无需额外复验。")
+    return "\n".join(L)
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description="opencrab 能力使用热力图 🔥🧊 —— 从审计/证据/入口痕迹标出久未验证、高频失败的器官")
@@ -311,6 +397,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="额外实跑每扇门的 --help，把推不开的标为发烫")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--cold", action="store_true", help="只列冰封器官（久未问津的旧壳）")
+    g.add_argument("--journeys", action="store_true",
+                   help="热旅程联动：挑最常用的器官 ⨉ 证据新鲜度，荐出该优先复验的几条")
     g.add_argument("--quiet", action="store_true",
                    help="只在有发烫器官时说话（适合钩子 / CI）")
     g.add_argument("--json", action="store_true",
@@ -320,6 +408,11 @@ def main(argv: list[str] | None = None) -> None:
     if args.days < 1:
         print(f"❌ --days 需为正整数，收到 {args.days}")
         sys.exit(2)
+
+    if args.journeys:
+        journeys = hot_journeys(days=args.days)
+        print(_render_journeys(journeys, args.days))
+        sys.exit(0)
 
     if args.json:
         print(json.dumps(manifest(days=args.days, probe=args.probe),

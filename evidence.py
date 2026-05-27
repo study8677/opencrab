@@ -334,10 +334,32 @@ def summarize(statuses: list[Status]) -> tuple[bool, dict[str, int]]:
 # 巡逻按「该不该现在重看」给每条声明打分，只复验最该看的前 N 条：
 #   · 未证(⚪) / 失守(🔴) —— 最该盯，给最高基线分；
 #   · 新鲜/过期 —— 按过期度(age/ttl，越超期分越高)算；
-#   · 再统一乘以各自的风险权重(risk)——腐烂代价高的，同等过期度下先巡。
+#   · 再统一乘以各自的风险权重(risk)——腐烂代价高的，同等过期度下先巡；
+#   · 最后按 usageheat 的真实常用度加权——被真实反复用到的能力，同等过期度下更该先巡
+#     (强弱应先盯真实常用处，而非雨露均沾)。
 # 分数 ≤ 0(远未到期且不急)的不打扰，省得把生命耗在没必要的复跑上。
-def patrol_score(status: Status, claim: Claim) -> float:
-    """这条声明此刻「该不该重看」的紧迫度：未证/失守最高，其余按过期度，乘风险权重。"""
+# 真实常用度加权：高频用到的能力，同等过期度下先巡——强弱应先盯真实常用处，
+# 而非雨露均沾。点名次数 ≥ _USAGE_CAP 即视作「很常用」，最多把分数抬到 2 倍。
+_USAGE_CAP = 5
+
+
+def _usage_weights() -> dict[str, int]:
+    """从 usageheat 取每个模块近期被点名次数，作为巡逻的「真实常用度」权重。
+
+    读不到（审计缺失 / usageheat 不在）则回空——巡逻退化回纯「过期度×风险」，绝不臆测谁热。
+    """
+    try:
+        import usageheat  # 延迟导入：避免与 usageheat 互相引用成环，且巡逻不强依赖它在场
+        return usageheat.mentions_by_module()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def patrol_score(status: Status, claim: Claim, *, usage: int = 0) -> float:
+    """这条声明此刻「该不该重看」的紧迫度：未证/失守最高，其余按过期度，乘风险权重。
+
+    usage = 该能力近期被点名次数；同等过期度下，被真实用得越多的越先巡（最多抬到 2 倍）。
+    """
     if status.state == "unproven":
         base = 2.0           # 光有声明没证据，最该补一次
     elif status.state == "broken":
@@ -346,19 +368,28 @@ def patrol_score(status: Status, claim: Claim) -> float:
         # 新鲜/过期：过期度 = 距上次验证的天数 ÷ 时效。=1 恰好到期，>1 已超期。
         overdue = (status.age_days or 0.0) / claim.ttl_days if claim.ttl_days > 0 else 1.0
         base = overdue - 0.5  # 留半个时效的余量：才验过没多久的，分数为负，不打扰
-    return base * claim.risk
+    score = base * claim.risk
+    # 只对「本就该看(分数>0)」的加权——别把才验过的常用能力硬拽回来重跑。
+    if score > 0 and usage > 0:
+        score *= 1.0 + min(usage, _USAGE_CAP) / _USAGE_CAP
+    return score
 
 
 def select_patrol(statuses: list[Status], budget: int,
-                  claims: list[Claim] | None = None) -> list[Claim]:
-    """挑出本轮最该复验的前 budget 条声明(分数 > 0 才入选；按分数降序、同分按名字定序)。"""
+                  claims: list[Claim] | None = None,
+                  *, usage: dict[str, int] | None = None) -> list[Claim]:
+    """挑出本轮最该复验的前 budget 条声明(分数 > 0 才入选；按分数降序、同分按名字定序)。
+
+    usage 缺省时自动从 usageheat 取真实常用度；传 {} 可显式关掉常用度加权。
+    """
     by_name = {c.name: c for c in (CLAIMS if claims is None else claims)}
+    usage = _usage_weights() if usage is None else usage
     scored = []
     for s in statuses:
         c = by_name.get(s.name)
         if c is None:
             continue
-        score = patrol_score(s, c)
+        score = patrol_score(s, c, usage=usage.get(s.name, 0))
         if score > 0:
             scored.append((score, c))
     scored.sort(key=lambda t: (-t[0], t[1].name))
