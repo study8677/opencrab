@@ -303,6 +303,18 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="intentpatch",
+        # brain 意图→补丁编译器:把一句人话小修(「把 version 改成 2.0」)编译成一条受限 JSON Patch
+        # (只 replace、只一条),再只在试衣间穿一遍——靶点闸保证只改已有值绝不顺手新建、保型闸拦住
+        # 数↔串↔真假这类低置信变型,落地复验「恰好那一条路径变了」,过了才落隔离影子副本,真身只读。
+        # 比 shadowscribe 又进一步:那是全文确定性重排,这是「照人话编出一处可落地、可拒收的改动」。
+        # 复跑命令验证文法内编得对/文法外老实弃权、靶点/保型/编译三闸各拦住该拦的、且全程真身字节不变。
+        asserts="brain 能把一句人话小修编译成只改一处已有值的受限 JSON Patch,只在影子上验收,真身全程字节不变",
+        argv=_PY + ["intentpatch.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 
