@@ -144,6 +144,21 @@ def _sample_patchfitroom() -> None:
         assert patchfitroom.GATE_ORDER[0] == "shape", "闸序须以最便宜的 shape 闸打头"
 
 
+def _sample_fitrework() -> None:
+    import fitrework
+    import patchfitroom
+    # 返工单最根本的承诺：拒收才封、过闸跳过；且封出的案例命令走 --fit-dry(重跑零副作用)、
+    # 把候选原样存进 stdin。persist=False 纯内存搭对象,不落盘、不起子进程——契约样例须无副作用。
+    rej = patchfitroom.FitResult(False, "syntax", "漏冒号", "contracts.py", ["shape", "syntax"], None)
+    s = fitrework.seal(rej, "def f()\n    pass\n", persist=False)
+    assert s.sealed and s.case_id and not s.persisted, f"拒收须被封成不落盘的返工单，实得 {s.to_meta()}"
+    case = fitrework._build_case(rej, "def f()\n    pass\n", persist=False)
+    assert "--fit-dry" in case.command, f"重跑命令须走 --fit-dry(零副作用)，实得 {case.command}"
+    assert case.stdin == "def f()\n    pass\n", "案例须把候选源码原样存进 stdin 供重跑"
+    passed = patchfitroom.FitResult(True, "", "已写回", "contracts.py", [], None)
+    assert not fitrework.seal(passed, "x", persist=False).sealed, "已过闸写回的不该被封"
+
+
 CONTRACTS: list[Contract] = [
     Contract(
         module="jsonlstore",
@@ -186,6 +201,13 @@ CONTRACTS: list[Contract] = [
         inputs="fit(target, candidate, *, repo, apply) 收目标文件路径与候选完整源码",
         outputs="回 FitResult(written, gate, detail, ...)：四闸全过且 apply→原子写回；任一闸没过→真文件不动、点名卡在哪闸；永不抛错",
         sample=_sample_patchfitroom,
+    ),
+    Contract(
+        module="fitrework",
+        duty="把试衣间拒收的补丁自动封成可复跑的 replay 案例 + coach 训练题，让犯过的错复练得到",
+        inputs="seal(result, candidate, *, persist) 收一个 patchfitroom.FitResult 与对应候选源码",
+        outputs="只封拒收(written=False 且卡在某闸)，过闸/看效果的跳过；案例命令走 --fit-dry 重跑零副作用；persist=False 只搭对象不落盘",
+        sample=_sample_fitrework,
     ),
 ]
 
