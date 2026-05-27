@@ -29,6 +29,16 @@ TASKS: List[Dict[str, Any]] = [
         "func_name": "run",  # 假设 organ_autodiag.run() 执行健康检查
         "desc": "执行模块健康检查"
     },
+    {
+        "module": "checkup",
+        "func_name": "run",  # 假设 checkup.run() 执行系统检查
+        "desc": "执行系统检查"
+    },
+    {
+        "module": "health",
+        "func_name": "run",  # 假设 health.run() 执行健康监控
+        "desc": "执行健康监控"
+    },
 ]
 
 def run_heartbeat(tasks: List[Dict[str, Any]] = None) -> None:
@@ -72,6 +82,25 @@ def register_task(module: str, func_name: str, desc: str) -> None:
         "desc": desc,
     })
     logger.debug(f"已注册新任务: {module}.{func_name} – {desc}")
+
+def auto_integrate_heartbeat() -> None:
+    """
+    尝试自动集成心跳任务到进化流程中。
+    尝试导入 cadence 模块并注册心跳任务，实现自动触发。
+    """
+    try:
+        # 假设 cadence 模块有 register_hook 或类似函数用于在进化拍开始时触发心跳
+        import cadence
+        if hasattr(cadence, 'register_hook'):
+            cadence.register_hook('evolution_start', run_heartbeat)
+            logger.info("心跳任务已自动注册到 cadence 的进化开始钩子")
+        else:
+            logger.debug("cadence 模块没有 register_hook 函数，无法自动注册")
+    except ImportError:
+        logger.debug("cadence 模块未找到，心跳任务未自动集成")
+
+# 在模块导入时尝试自动集成
+auto_integrate_heartbeat()
 
 # 命令行接口：直接运行 python heartbeat.py 可手动触发
 if __name__ == "__main__":
