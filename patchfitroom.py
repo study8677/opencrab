@@ -15,12 +15,14 @@
   1) 🧱 **形状闸(shape)**：先过 `patchcontract` 的畸形/越界拒收闸(纯内存、瞬时)。
      None/空白/非串/重写式大改，当场拒，连临时副本都不必建。
   2) 🔤 **语法闸(syntax)**：把候选 `py_compile` 一遍——编译不过，拒。
-  3) 📦 **import 闸**：在「候选覆盖、其余模块仍取真仓库」的隔离 sys.path 里 import 这个模块，
+  3) 👋 **触觉闸(touch)**：过 `touch.py` 比对落笔前后的副作用足迹(纯内存、`ast.parse` 绝不执行)——
+     候选若在原本只算数的地方**新增**了 IO/环境变量/网络/执行命令，当场拒。只拒新增、不算原有的账。
+  4) 📦 **import 闸**：在「候选覆盖、其余模块仍取真仓库」的隔离 sys.path 里 import 这个模块，
      看它**加载即崩**没有(就是 `hands._self_test`/`weaning` 那句「还能不能启动」)。
-  4) 📜 **契约闸(contract)**：在同一套覆盖下跑 `contracts.py` 的全部验收样例——
+  5) 📜 **契约闸(contract)**：在同一套覆盖下跑 `contracts.py` 的全部验收样例——
      这一爪有没有把本模块的契约、或任何下游模块的契约暗中改塌。
 
-四闸全过，且 `apply=True`，才把候选**原子写回**真文件(同目录临时文件 + `os.replace`，
+五闸全过，且 `apply=True`，才把候选**原子写回**真文件(同目录临时文件 + `os.replace`，
 保留原权限位)；任何一闸没过，**真文件分毫不动**，报告卡在哪道闸、为什么。闸按「最便宜/
 最根本的先跑」排序，前一道过了才跑下一道，省得把生命耗在注定要拒的候选上。
 
@@ -54,15 +56,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import patchcontract  # noqa: E402 —— 形状闸复用补丁契约：畸形/越界先拦在门外
+import touch  # noqa: E402 —— 触觉闸复用自生手触觉层：比对落笔前后的副作用足迹，新增危险即拒
 
 GATE_TIMEOUT = 60      # 单道子进程闸的墙钟上限(秒)：试穿不该把生命拖死
 
-# ── 四道闸的名字与次序(最便宜/最根本的先跑，前一道过了才跑下一道) ────────────
+# ── 五道闸的名字与次序(最便宜/最根本的先跑，前一道过了才跑下一道) ────────────
 GATE_SHAPE = "shape"        # 形状：畸形/越界(纯内存，瞬时)
 GATE_SYNTAX = "syntax"      # 语法：py_compile
+GATE_TOUCH = "touch"        # 触觉：比对前后副作用足迹，新增 IO/env/网络/执行命令即拒(纯内存)
 GATE_IMPORT = "import"      # 加载：import 这个模块，看它起跑即崩没有
 GATE_CONTRACT = "contract"  # 契约：跑 contracts.py 全部验收样例
-GATE_ORDER = [GATE_SHAPE, GATE_SYNTAX, GATE_IMPORT, GATE_CONTRACT]
+GATE_ORDER = [GATE_SHAPE, GATE_SYNTAX, GATE_TOUCH, GATE_IMPORT, GATE_CONTRACT]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -132,7 +136,7 @@ def fit(target, candidate, *, repo=REPO_ROOT, check_contracts: bool = True,
         apply: bool = True,
         max_changed_lines: int = patchcontract.DEFAULT_MAX_CHANGED_LINES,
         max_line_delta: int = patchcontract.DEFAULT_MAX_LINE_DELTA) -> FitResult:
-    """让候选补丁在临时副本上过四闸；全过且 apply 才原子写回真文件，否则真文件分毫不动。
+    """让候选补丁在临时副本上过五闸；全过且 apply 才原子写回真文件，否则真文件分毫不动。
 
     target  : 真仓库内要被改的文件路径(其当前内容当 before)。
     candidate: 候选的**完整新源码**(像 weaning 的招式吐出的整段源码)。
@@ -170,7 +174,16 @@ def fit(target, candidate, *, repo=REPO_ROOT, check_contracts: bool = True,
                 return FitResult(False, GATE_SYNTAX, _tail(r) or "编译失败",
                                  str(target), gates_run, verdict.to_meta())
 
-            # ── 闸 3) import：候选覆盖下加载本模块，看它起跑即崩没有 ──
+            # ── 闸 3) 触觉：比对落笔前后副作用足迹，候选新增 IO/env/网络/执行命令即拒 ──
+            # 纯内存、本进程 ast.parse(绝不执行候选)，便宜得很；放在 import/契约之前，
+            # 让「能编译、能加载、契约也守约，却偷长出新副作用」的隐蔽伤先被摸出来。
+            gates_run.append(GATE_TOUCH)
+            tv = touch.feel(before, candidate)
+            if not tv.ok:
+                return FitResult(False, GATE_TOUCH, tv.detail,
+                                 str(target), gates_run, verdict.to_meta())
+
+            # ── 闸 4) import：候选覆盖下加载本模块，看它起跑即崩没有 ──
             gates_run.append(GATE_IMPORT)
             r = _staged_run(
                 f"import importlib\nimportlib.import_module({modname!r})",
@@ -179,7 +192,7 @@ def fit(target, candidate, *, repo=REPO_ROOT, check_contracts: bool = True,
                 return FitResult(False, GATE_IMPORT, _tail(r) or "加载即崩",
                                  str(target), gates_run, verdict.to_meta())
 
-            # ── 闸 4) 契约：同一覆盖下跑全部契约验收样例，看有没有暗中改塌某条契约 ──
+            # ── 闸 5) 契约：同一覆盖下跑全部契约验收样例，看有没有暗中改塌某条契约 ──
             if check_contracts and (repo / "contracts.py").exists():
                 gates_run.append(GATE_CONTRACT)
                 snippet = (
@@ -267,7 +280,7 @@ def selfcheck(quiet: bool = False) -> bool:
             dp = pathlib.Path(d)
             fn(dp, _mini_repo(dp))
 
-    # 1) 干净的「修一处」补丁：四闸全过 → 原子写回，真文件确实变了
+    # 1) 干净的「修一处」补丁：五闸全过 → 原子写回，真文件确实变了
     def s_pass(dp, target):
         cand = "def area(w, h):\n    return w * h  # 量过了\n"
         r = fit(target, cand, repo=dp)
@@ -297,7 +310,18 @@ def selfcheck(quiet: bool = False) -> bool:
             failures.append("syntax 拒收后真文件竟被改动")
     in_repo(s_syntax)
 
-    # 4) import 闸：能编译但加载即崩(顶层 raise) → 拒，真文件分毫不动
+    # 4) 触觉闸：能编译，但在原本只算数的函数里偷起 os.system → 新增执行命令，拒，真文件不动
+    def s_touch(dp, target):
+        before = target.read_text(encoding="utf-8")
+        cand = "import os\ndef area(w, h):\n    os.system('echo hi')\n    return w * h\n"
+        r = fit(target, cand, repo=dp)
+        if r.written or r.gate != GATE_TOUCH:
+            failures.append(f"偷起 os.system 的候选该卡在 touch 闸，实得 {r.to_meta()}")
+        if target.read_text(encoding="utf-8") != before:
+            failures.append("touch 拒收后真文件竟被改动")
+    in_repo(s_touch)
+
+    # 5) import 闸：能编译但加载即崩(顶层 raise) → 拒，真文件分毫不动
     def s_import(dp, target):
         before = target.read_text(encoding="utf-8")
         cand = 'def area(w, h):\n    return w * h\nraise RuntimeError("加载即崩")\n'
@@ -308,7 +332,7 @@ def selfcheck(quiet: bool = False) -> bool:
             failures.append("import 拒收后真文件竟被改动")
     in_repo(s_import)
 
-    # 5) 契约闸：能编译、能加载，但把语义改塌(area 返回 w+h) → 契约验收不过，拒，真文件不动
+    # 6) 契约闸：能编译、能加载，但把语义改塌(area 返回 w+h) → 契约验收不过，拒，真文件不动
     def s_contract(dp, target):
         before = target.read_text(encoding="utf-8")
         r = fit(target, "def area(w, h):\n    return w + h\n", repo=dp)
@@ -318,7 +342,7 @@ def selfcheck(quiet: bool = False) -> bool:
             failures.append("contract 拒收后真文件竟被改动")
     in_repo(s_contract)
 
-    # 6) apply=False：四闸全过也只看效果不写回，真文件分毫不动
+    # 7) apply=False：五闸全过也只看效果不写回，真文件分毫不动
     def s_dryfit(dp, target):
         before = target.read_text(encoding="utf-8")
         r = fit(target, "def area(w, h):\n    return w * h  # 试穿\n",
@@ -332,7 +356,7 @@ def selfcheck(quiet: bool = False) -> bool:
     ok = not failures
     if not quiet:
         if ok:
-            print("✅ patchfitroom selfcheck：过闸写回成立，四道闸各能拒收，"
+            print("✅ patchfitroom selfcheck：过闸写回成立，五道闸各能拒收，"
                   "且每次拒收后真文件分毫不动——试衣间可信。")
         else:
             print("❌ patchfitroom selfcheck 失败：")
@@ -343,7 +367,7 @@ def selfcheck(quiet: bool = False) -> bool:
 
 # ── 演示 ───────────────────────────────────────────────────────────────
 def _demo() -> None:
-    print("🪞🖐️  brain 补丁试衣间 —— 候选先穿临时副本过四闸，过了才原子写回：\n")
+    print("🪞🖐️  brain 补丁试衣间 —— 候选先穿临时副本过五闸，过了才原子写回：\n")
     print(f"   闸序：{' → '.join(GATE_ORDER)}"
           f"（阈值：改动 ≤ {patchcontract.DEFAULT_MAX_CHANGED_LINES} 行、"
           f"行数增减 ≤ {patchcontract.DEFAULT_MAX_LINE_DELTA}）\n")
@@ -351,6 +375,8 @@ def _demo() -> None:
         ("✅ 干净修一处(加行内注释)", "def area(w, h):\n    return w * h  # 量过了\n"),
         ("🧱 形状：改成空白", "   \n"),
         ("🔤 语法：漏了冒号", "def area(w, h)\n    return w * h\n"),
+        ("👋 触觉：偷起 os.system(新增执行命令)",
+         "import os\ndef area(w, h):\n    os.system('echo hi')\n    return w * h\n"),
         ("📦 import：加载即崩", 'def area(w, h):\n    return w * h\nraise RuntimeError("崩")\n'),
         ("📜 契约：把 * 改成 +(语义塌了)", "def area(w, h):\n    return w + h\n"),
     ]
@@ -370,8 +396,8 @@ def _demo() -> None:
 def _fit_from_stdin(path: str, *, quiet: bool, dry: bool = False) -> int:
     """从 stdin 读候选源码，对真仓库内的 path 试穿。返回退出码。
 
-    dry=False：四闸全过则原子写回，退出码 0 表「已写回」。
-    dry=True ：apply=False，只试穿看过不过闸、绝不写真文件；退出码 0 表「四闸全过(本可写回)」、
+    dry=False：五闸全过则原子写回，退出码 0 表「已写回」。
+    dry=True ：apply=False，只试穿看过不过闸、绝不写真文件；退出码 0 表「五闸全过(本可写回)」、
                1 表「卡在某道闸」。供 replay 把一次拒收当回归用例重跑——零副作用地判收/拒。
     """
     target = (REPO_ROOT / path).resolve()
