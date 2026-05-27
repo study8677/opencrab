@@ -265,6 +265,98 @@ def autopsy(day: str | None = None, *, only_today: bool = True) -> list[Cluster]
     return cluster(collect(day, only_today=only_today))
 
 
+# ── 立项前置闸：把一个目标匹配到历史根因，产出禁忌清单与验证命令 ──────
+# 为什么：这只螃蟹已经会**记**根因(上面的聚类)，但立项时没人回头看——同一个坑
+# 今天填了明天又踩。同坑复摔比新失败更伤进化(老病根明明记着却没拦住)。precheck
+# 就是「立项闸」：拿要立的目标去比对全部历史根因，命中的簇把它们的预防清单合成
+# 一份**禁忌清单**、把验证命令合成一组**自检命令**，让 planner 带着「别再栽这几处」
+# 开工。仍在摔的根因优先——还没愈的坑最该先拦。
+def _overlap(goal: str, text: str) -> float:
+    """目标被某簇词汇覆盖的比例(0~1)：命中越多，这个根因越可能挡在路上。
+
+    复用 memory 的中英混合切词(单字 + 相邻二字组近似词)；按「目标词被覆盖多少」
+    而非 Jaccard——目标是一句短话、簇文本是多条现场拼起来的长文，用覆盖率才不会
+    被簇这边的大词表稀释掉。memory 缺席就从容退回 0。
+    """
+    try:
+        import memory
+        g = memory._tokens(goal)
+        if not g:
+            return 0.0
+        return len(g & memory._tokens(text)) / len(g)
+    except Exception:
+        return 0.0
+
+
+def lessons_for(goal: str, *, k: int = 3, min_overlap: float = 0.12,
+                only_today: bool = False) -> list[Cluster]:
+    """检索与目标最相关的历史根因簇(默认翻全部历史)：仍在摔的优先、命中度次之。
+
+    匹配不到 / 出错都从容返回空表——前置闸是参谋，绝不能反噬立项。
+    """
+    goal = (goal or "").strip()
+    if not goal:
+        return []
+    try:
+        clusters = autopsy(only_today=only_today)
+    except Exception:
+        return []
+    scored: list[tuple[bool, float, int, Cluster]] = []
+    for i, c in enumerate(clusters):
+        text = f"{c.code} {c.spec().title} " + " ".join(
+            f"{s.where} {s.message}" for s in c.signals)
+        ov = _overlap(goal, text)
+        if ov >= min_overlap:
+            # 第三位放 -i 作平手裁决：避免落到不可比较的 Cluster 上(reverse 排序时)。
+            scored.append((c.live_count > 0, ov, -i, c))
+    scored.sort(key=lambda x: x[:3], reverse=True)
+    return [c for *_, c in scored[:k]]
+
+
+def precheck(goal: str, *, k: int = 3, taboo_cap: int = 6,
+             verify_cap: int = 5) -> dict:
+    """立项前置闸的成品：把命中的根因簇合并成禁忌清单 + 验证命令(都去重保序)。
+
+    返回 {codes, taboos, verifies, live}：codes 是命中的根因码，live 是其中仍在摔
+    的簇数。没命中则各字段为空——干净起步，无坑可避。
+    """
+    clusters = lessons_for(goal, k=k)
+    taboos: list[str] = []
+    verifies: list[str] = []
+    seen_t: set[str] = set()
+    seen_v: set[str] = set()
+    for c in clusters:
+        for it in c.prevention():
+            if it not in seen_t:
+                seen_t.add(it)
+                taboos.append(it)
+        for v in c.verification():
+            if v not in seen_v:
+                seen_v.add(v)
+                verifies.append(v)
+    return {
+        "codes": [c.code for c in clusters],
+        "live": sum(1 for c in clusters if c.live_count > 0),
+        "taboos": taboos[:taboo_cap],
+        "verifies": verifies[:verify_cap],
+    }
+
+
+def render_precheck(goal: str, gate: dict) -> str:
+    codes = gate.get("codes") or []
+    if not codes:
+        return f"🚦 立项闸 · {goal[:40]}：历史尸检里没翻到同类根因——这是片新地，放手去 🌊"
+    flag = f"，其中 {gate['live']} 个仍在摔" if gate.get("live") else ""
+    lines = [f"🚦 立项闸 · {goal[:40]}",
+             f"   命中 {len(codes)} 个历史根因（{'/'.join(codes)}）{flag}",
+             "   禁忌清单（同坑勿踩）："]
+    lines += [f"     □ {t}" for t in gate.get("taboos", [])]
+    if gate.get("verifies"):
+        lines.append("   验证命令（开工前后各跑一遍确认没复踩）：")
+        lines += [f"     $ {v}" for v in gate["verifies"]]
+    return "\n".join(lines)
+
+
 # ── 渲染 ────────────────────────────────────────────────────────────
 def render(clusters: list[Cluster], scope: str) -> str:
     if not clusters:
@@ -297,7 +389,18 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--all", action="store_true",
                     help="纳入记忆+回放里的全部历史失败(不只今天)")
     ap.add_argument("--json", action="store_true", help="机读：导出根因簇 JSON")
+    ap.add_argument("--for", dest="goal", metavar="目标",
+                    help="立项前置闸：检索这个目标命中的历史根因，产出禁忌清单与验证命令")
     args = ap.parse_args(argv)
+
+    if args.goal:
+        gate = precheck(args.goal)
+        if args.json:
+            print(json.dumps({"goal": args.goal, **gate},
+                             ensure_ascii=False, indent=2))
+        else:
+            print(render_precheck(args.goal, gate))
+        return
 
     only_today = not args.all
     day = args.day or datetime.date.today().isoformat()

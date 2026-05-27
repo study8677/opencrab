@@ -328,25 +328,57 @@ def draft(goal: str) -> Plan:
 
     这是「起手式」而非定制方案——每步都预写了回退，调用方该按真实目标改写/细化。
     会软引入 memory：若这类目标以前栽过，给「实现」步的回退里加一句预警。
+    还会软引入 autopsy 立项前置闸：若命中历史根因，最前面多立一道「尸检禁忌闸」步
+    (带禁忌清单)、并把同坑验证命令缀进「验证」步——同坑复摔比新失败更伤进化。
     """
     goal = (goal or "").strip() or "(未命名长期目标)"
     warn = _recall_warning(goal)
+    gate = _autopsy_gate(goal)              # 立项前置闸：同类目标历史栽过的根因
     impl_fallback = "退回 design 重画接口，缩小这一步的范围再试"
     if warn:
         impl_fallback += f"；⚠️ {warn}"
-    steps = [
+    verify_what = "补自测并跑 checkup/smoke，确认没把自己改坏"
+    if gate.get("verifies"):
+        verify_what += "；并跑同坑验证：" + " ; ".join(gate["verifies"])
+    steps: list[Step] = []
+    scope_deps: list[str] = []
+    if gate.get("taboos"):
+        # 命中历史根因 → 在最前面立一道「尸检禁忌闸」，scope 起步前先过它。
+        codes = "/".join(gate.get("codes", [])) or "?"
+        steps.append(Step(
+            "taboo",
+            f"立项前过尸检禁忌闸（命中历史根因 {codes}）：逐条确认本次不复踩——"
+            + "；".join(gate["taboos"]),
+            milestone=False,
+            fallback="命中同坑就先改设计绕开它，别带着已知病根硬开工"))
+        scope_deps = ["taboo"]
+    steps += [
         Step("scope", "摸清现状与边界：翻已有同类模块、列出约束与未知数",
+             depends_on=scope_deps,
              milestone=False, fallback="问题没问清就先停手求证，别急着设计"),
         Step("design", "画出接口草图与数据流，定下这次要长出的最小本事",
              depends_on=["scope"], milestone=True,
              fallback="照搬领地里最接近的同类模块的形状，先有再好"),
         Step("impl", "写实现：保持纯标准库、克制行数、对齐领地风格",
              depends_on=["design"], milestone=False, fallback=impl_fallback),
-        Step("verify", "补自测并跑 checkup/smoke，确认没把自己改坏",
+        Step("verify", verify_what,
              depends_on=["impl"], milestone=True,
              fallback="没过就退回 impl 修到绿，绝不带着红测合并"),
     ]
     return Plan(goal=goal, steps=steps).refresh()
+
+
+def _autopsy_gate(goal: str) -> dict:
+    """立项前置闸：检索这个目标命中的历史尸检根因，产出禁忌清单与验证命令。
+
+    收口到 autopsy 的单一根因检索（`autopsy.precheck`）——「同类目标栽过哪些病根」
+    全仓只此一处，planner 不自己聚类。autopsy 缺席/出错就从容退回空闸（不拦立项）。
+    """
+    try:
+        import autopsy
+        return autopsy.precheck(goal)
+    except Exception:
+        return {}
 
 
 def _recall_warning(text: str, k: int = 2) -> str:
