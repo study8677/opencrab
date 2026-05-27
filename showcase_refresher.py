@@ -121,15 +121,7 @@ def main():
     data = refresh_showcase()
     print(f"橱窗数据已刷新：{json.dumps(data, indent=2, ensure_ascii=False)}")
     
-    # 同时更新 HTML 展示页
-    try:
-        # 导入并运行 showcase.py
-        showcase_path = Path(__file__).parent / "showcase.py"
-        if showcase_path.exists():
-            subprocess.run([sys.executable, str(showcase_path)], cwd=Path(__file__).parent, check=True)
-            print("HTML 展示页已同步更新")
-    except Exception as e:
-        print(f"警告：无法更新 HTML 展示页: {e}")
+    # 展示页已由 refresh_showcase() 直接生成并更新
 
 
 if __name__ == "__main__":
