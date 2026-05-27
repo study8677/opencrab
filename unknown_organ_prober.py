@@ -75,7 +75,20 @@ def has_capability_description(file_path: Path) -> bool:
     return False
 
 def probe_module(module_name: str) -> Dict:
-    """对单个模块运行最小探针"""
+    """对单个模块运行最小探针
+    
+    Returns:
+        包含探测结果的字典，包括:
+        - module: 模块名
+        - import_success: 是否可导入
+        - has_cli: 是否有CLI入口
+        - has_contracts: 是否有契约
+        - trust_score: 信任分数(0-1)
+        - capability_description: 能力描述
+        - errors: 错误列表
+        - functions: 导出的函数列表
+        - classes: 导出的类列表
+    """
     result = {
         "module": module_name,
         "import_success": False,
@@ -83,7 +96,9 @@ def probe_module(module_name: str) -> Dict:
         "has_contracts": False,
         "trust_score": 0.0,
         "capability_description": "",
-        "errors": []
+        "errors": [],
+        "functions": [],
+        "classes": []
     }
     
     # 1. 尝试导入
