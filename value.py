@@ -62,11 +62,15 @@ class ValueCard:
     acceptance: list[str]   # 验收样例命令：退出码 0 = 价值此刻真的兑现得了
     counter: list[str]      # 反指标守卫命令：退出码 0 = 没有「优化局部、拖垮整体」
     counter_why: str        # 一句话：这条反指标在盯着哪个「别处」不被牺牲
+    user_journey: list[str] = dataclasses.field(
+        default_factory=lambda: _PY + ["userlab.py", "--run", "value-seeker", "--quiet"]
+    )                       # 可复跑用户旅程：退出码 0 = 真实使用者从头走得到尾
 
     def to_meta(self) -> dict:
         return {"name": self.name, "scenario": self.scenario,
                 "beneficiary": self.beneficiary, "acceptance": self.acceptance,
-                "counter": self.counter, "counter_why": self.counter_why}
+                "counter": self.counter, "counter_why": self.counter_why,
+                "user_journey": self.user_journey}
 
 
 # ── 价值卡清单：单一真相源 ────────────────────────────────────────────
@@ -116,15 +120,16 @@ class CheckResult:
     name: str
     acceptance_ok: bool
     counter_ok: bool
+    journey_ok: bool
     detail: str            # 失败命令的现场原文；否则空
 
     @property
     def state(self) -> str:
-        if self.acceptance_ok and self.counter_ok:
-            return "delivered"      # 💎 验收过且反指标也过：价值真兑现
+        if self.acceptance_ok and self.counter_ok and self.journey_ok:
+            return "delivered"      # 💎 验收、反指标、用户旅程都过：价值真兑现
         if self.acceptance_ok and not self.counter_ok:
             return "regressed"      # 🔻 赚了吆喝赔了买卖：局部好看、别处被拖垮
-        return "unmet"              # ⚪ 验收都没过：价值此刻兑现不了
+        return "unmet"              # ⚪ 验收/旅程没过：价值此刻兑现不了
 
     _MARKS = {"delivered": "💎", "regressed": "🔻", "unmet": "⚪"}
     _WORDS = {"delivered": "兑现", "regressed": "反噬", "unmet": "未兑现"}
@@ -144,7 +149,7 @@ class CheckResult:
     def to_meta(self) -> dict:
         return {"name": self.name, "state": self.state,
                 "acceptance_ok": self.acceptance_ok, "counter_ok": self.counter_ok,
-                "detail": self.detail}
+                "journey_ok": self.journey_ok, "detail": self.detail}
 
 
 def _run(argv: list[str]) -> tuple[bool, str]:
@@ -164,15 +169,18 @@ def _run(argv: list[str]) -> tuple[bool, str]:
 
 
 def check(card: ValueCard) -> CheckResult:
-    """复跑一张卡的验收 + 反指标，折叠成兑现状态(全程只读，不落盘)。"""
+    """复跑一张卡的验收 + 反指标 + 用户旅程，折叠成兑现状态(全程只读，不落盘)。"""
     acc_ok, acc_detail = _run(card.acceptance)
     cnt_ok, cnt_detail = _run(card.counter)
+    jou_ok, jou_detail = _run(card.user_journey)
     detail = ""
     if not acc_ok:
         detail = f"验收未过：{acc_detail.splitlines()[0][:120]}" if acc_detail else "验收未过"
     elif not cnt_ok:
         detail = f"反指标变红：{cnt_detail.splitlines()[0][:120]}" if cnt_detail else "反指标变红"
-    return CheckResult(card.name, acc_ok, cnt_ok, detail)
+    elif not jou_ok:
+        detail = f"用户旅程未通：{jou_detail.splitlines()[0][:120]}" if jou_detail else "用户旅程未通"
+    return CheckResult(card.name, acc_ok, cnt_ok, jou_ok, detail)
 
 
 # ── 覆盖：哪些模块还没有价值卡 ────────────────────────────────────────
@@ -203,6 +211,7 @@ def _print_cards(cards: list[ValueCard]) -> None:
         print(f"      受益者：{c.beneficiary}")
         print(f"      验收：{' '.join(c.acceptance[1:]) or c.acceptance[0]}")
         print(f"      反指标：{' '.join(c.counter[1:]) or c.counter[0]}（{c.counter_why}）")
+        print(f"      用户旅程：{' '.join(c.user_journey[1:]) or c.user_journey[0]}")
     print()
     miss = uncovered()
     if miss:
