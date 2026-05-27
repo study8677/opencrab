@@ -172,6 +172,16 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="fitrework",
+        # 试衣间拒收返工单:把每次被试衣间拦下的补丁,自动封成可复跑的 replay 案例(命令走 --fit-dry,
+        # 重跑只判收/拒、绝不写真文件)+ 一道 coach 失败训练题。复跑命令验证拒收才封、过闸跳过、
+        # 案例命令能零副作用重跑出同样的拒收——自生的手会犯错,犯过的错要复练得到才会真正长稳。
+        asserts="试衣间拒收的补丁会被自动封成可复跑的 replay 案例+coach 训练题,且重跑零副作用",
+        argv=_PY + ["fitrework.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 

@@ -33,6 +33,7 @@
     python patchfitroom.py --selfcheck     # 自检：过闸写回 / 各闸拒收 / 拒收后真文件分毫不动
     python patchfitroom.py --json          # 机读：闸序 + 阈值
     python patchfitroom.py --fit PATH      # 从 stdin 读候选源码，对 PATH(真仓库内)试穿落盘
+    python patchfitroom.py --fit-dry PATH  # 同上但只试穿不写回(过闸→0/拒收→1)，供 replay 零副作用重跑
     加 --quiet 静默，仅以退出码表态。
 
 零第三方依赖，纯标准库；fit 永不抛错形态的拒收闸自己绝不能成为新伤口。
@@ -366,22 +367,29 @@ def _demo() -> None:
     print()
 
 
-def _fit_from_stdin(path: str, *, quiet: bool) -> int:
-    """从 stdin 读候选源码，对真仓库内的 path 试穿落盘。返回退出码。"""
+def _fit_from_stdin(path: str, *, quiet: bool, dry: bool = False) -> int:
+    """从 stdin 读候选源码，对真仓库内的 path 试穿。返回退出码。
+
+    dry=False：四闸全过则原子写回，退出码 0 表「已写回」。
+    dry=True ：apply=False，只试穿看过不过闸、绝不写真文件；退出码 0 表「四闸全过(本可写回)」、
+               1 表「卡在某道闸」。供 replay 把一次拒收当回归用例重跑——零副作用地判收/拒。
+    """
     target = (REPO_ROOT / path).resolve()
     if not target.is_relative_to(REPO_ROOT):   # 只许试穿真仓库内的文件，挡掉 ../ 越界写盘
         if not quiet:
             print(f"⛔ 拒绝：{path} 解析到仓库之外（{target}），试衣间只对仓库内文件落盘")
         return 2
     candidate = sys.stdin.read()
-    r = fit(target, candidate, repo=REPO_ROOT)
+    r = fit(target, candidate, repo=REPO_ROOT, apply=not dry)
+    passed = r.written or (dry and r.gate == "")   # dry 下过闸表现为 written=False、gate==""
     if not quiet:
-        if r.written:
-            print(f"🟢 {target.name}：全闸通过 → 已原子写回（{' → '.join(r.gates_run)}）")
+        if passed:
+            tail = "全闸通过（试穿不写回）" if dry else "全闸通过 → 已原子写回"
+            print(f"🟢 {target.name}：{tail}（{' → '.join(r.gates_run)}）")
         else:
             where = f"卡在 {r.gate} 闸" if r.gate else "未写回"
             print(f"🔴 {target.name}：{where} —— {r.detail}")
-    return 0 if r.written else 1
+    return 0 if passed else 1
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -391,6 +399,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--json", action="store_true", help="机读：闸序 + 阈值")
     ap.add_argument("--fit", metavar="PATH",
                     help="从 stdin 读候选源码，对真仓库内 PATH 试穿落盘")
+    ap.add_argument("--fit-dry", metavar="PATH", dest="fit_dry",
+                    help="同 --fit 但只试穿不写回(apply=False)：退出码 0=过闸 1=拒收，供 replay 零副作用重跑")
     ap.add_argument("--quiet", action="store_true", help="静默，仅以退出码表态")
     args = ap.parse_args(argv)
 
@@ -403,6 +413,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.fit:
         sys.exit(_fit_from_stdin(args.fit, quiet=args.quiet))
+
+    if args.fit_dry:
+        sys.exit(_fit_from_stdin(args.fit_dry, quiet=args.quiet, dry=True))
 
     if not args.quiet:
         _demo()
