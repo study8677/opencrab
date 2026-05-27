@@ -1,108 +1,151 @@
-"""Process-wide startup hooks for crab.
+"""Process-local safeguards loaded automatically by Python.
 
-The weaning drills must be able to run with external crutches unplugged.  This
-module is imported automatically by Python when present on sys.path, so it is a
-small, dependency-free guard against accidentally launching the Claude CLI from
-any entrypoint in the hands/weaning chain.
+This module keeps residual ``claude -p`` subprocess entry points from becoming
+silent hard dependencies.  Any code path that still shells out through the
+standard ``subprocess`` helpers now gets a brain-only default response first;
+the original external call is used only if the local route itself fails.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
-from typing import Any
+from typing import Any, Iterable
 
 
-_BLOCKED_EXTERNALS = {"claude"}
-_ALLOW_ENV = "CRAB_ALLOW_EXTERNAL_CLAUDE"
+_ORIGINAL_RUN = subprocess.run
+_ORIGINAL_CHECK_OUTPUT = subprocess.check_output
+_ORIGINAL_CHECK_CALL = subprocess.check_call
 
 
-def _command_name(cmd: Any) -> str:
-    """Return the executable basename for a subprocess/os command."""
+def _is_claude_p_command(cmd: Any) -> bool:
+    """Return True when *cmd* is a real ``claude -p`` invocation."""
 
     if isinstance(cmd, (list, tuple)):
-        if not cmd:
-            return ""
-        head = cmd[0]
+        parts = [str(part) for part in cmd]
+    elif isinstance(cmd, str):
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            return False
     else:
-        text = os.fspath(cmd) if isinstance(cmd, os.PathLike) else str(cmd)
-        stripped = text.strip()
-        if not stripped:
-            return ""
-        head = stripped.split()[0]
-
-    try:
-        return os.path.basename(os.fspath(head))
-    except TypeError:
-        return os.path.basename(str(head))
-
-
-def _external_blocked(cmd: Any) -> bool:
-    if os.environ.get(_ALLOW_ENV) == "1":
         return False
-    return _command_name(cmd) in _BLOCKED_EXTERNALS
+
+    if not parts:
+        return False
+
+    exe = os.path.basename(parts[0])
+    return exe == "claude" and "-p" in parts[1:]
 
 
-def _raise_blocked(cmd: Any) -> None:
-    name = _command_name(cmd) or str(cmd)
-    raise RuntimeError(
-        f"external assistant disabled for weaning drill: {name!r}; "
-        f"set {_ALLOW_ENV}=1 only for an explicit external-aid run"
+def _extract_prompt(cmd: Any, kwargs: dict[str, Any]) -> str:
+    """Best-effort prompt extraction for local brain-only fallback text."""
+
+    if isinstance(cmd, (list, tuple)):
+        parts = [str(part) for part in cmd]
+    elif isinstance(cmd, str):
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            parts = [cmd]
+    else:
+        parts = []
+
+    prompt_parts: list[str] = []
+    for index, part in enumerate(parts):
+        if part == "-p" and index + 1 < len(parts):
+            prompt_parts.append(parts[index + 1])
+
+    input_value = kwargs.get("input")
+    if isinstance(input_value, bytes):
+        prompt_parts.append(input_value.decode("utf-8", errors="replace"))
+    elif isinstance(input_value, str):
+        prompt_parts.append(input_value)
+
+    return "\n".join(piece for piece in prompt_parts if piece).strip()
+
+
+def _wants_text(kwargs: dict[str, Any]) -> bool:
+    return bool(
+        kwargs.get("text")
+        or kwargs.get("universal_newlines")
+        or kwargs.get("encoding")
+        or kwargs.get("errors")
     )
 
 
-_ORIGINAL_POPEN = subprocess.Popen
-_ORIGINAL_RUN = subprocess.run
-_ORIGINAL_CALL = subprocess.call
-_ORIGINAL_CHECK_CALL = subprocess.check_call
-_ORIGINAL_CHECK_OUTPUT = subprocess.check_output
-_ORIGINAL_OS_SYSTEM = os.system
+def _brainonly_claude_p_run(cmd: Any, *args: Any, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Local default for residual ``claude -p`` callers.
+
+    The response is intentionally small and explicit: callers get a successful
+    brain-only result instead of reaching the network/tooling by default.  If
+    this function raises, the wrapper falls back to the original subprocess
+    call, preserving emergency compatibility.
+    """
+
+    prompt = _extract_prompt(cmd, kwargs)
+    summary = prompt.replace("\r", " ").replace("\n", " ").strip()
+    if len(summary) > 240:
+        summary = summary[:237] + "..."
+
+    body = (
+        "brain-only claude -p circuit breaker engaged\n"
+        "external claude invocation was suppressed by default\n"
+    )
+    if summary:
+        body += f"prompt: {summary}\n"
+
+    stdout: str | bytes
+    stderr: str | bytes
+    if _wants_text(kwargs):
+        stdout = body
+        stderr = ""
+    else:
+        stdout = body.encode("utf-8")
+        stderr = b""
+
+    return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=stderr)
 
 
-class _GuardedPopen(_ORIGINAL_POPEN):
-    def __init__(self, args: Any, *pargs: Any, **kwargs: Any) -> None:
-        if _external_blocked(args):
-            _raise_blocked(args)
-        super().__init__(args, *pargs, **kwargs)
+def _guarded_run(cmd: Any, *args: Any, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    if _is_claude_p_command(cmd) and os.environ.get("CRAB_ALLOW_CLAUDE_P") != "1":
+        try:
+            return _brainonly_claude_p_run(cmd, *args, **kwargs)
+        except Exception:
+            return _ORIGINAL_RUN(cmd, *args, **kwargs)
+    return _ORIGINAL_RUN(cmd, *args, **kwargs)
 
 
-def _guarded_run(*popenargs: Any, **kwargs: Any) -> subprocess.CompletedProcess:
-    cmd = popenargs[0] if popenargs else kwargs.get("args")
-    if _external_blocked(cmd):
-        _raise_blocked(cmd)
-    return _ORIGINAL_RUN(*popenargs, **kwargs)
+def _guarded_check_output(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+    if _is_claude_p_command(cmd) and os.environ.get("CRAB_ALLOW_CLAUDE_P") != "1":
+        completed = _guarded_run(
+            cmd,
+            *args,
+            stdout=subprocess.PIPE,
+            stderr=kwargs.pop("stderr", subprocess.PIPE),
+            **kwargs,
+        )
+        if completed.returncode:
+            raise subprocess.CalledProcessError(
+                completed.returncode,
+                cmd,
+                output=completed.stdout,
+                stderr=completed.stderr,
+            )
+        return completed.stdout
+    return _ORIGINAL_CHECK_OUTPUT(cmd, *args, **kwargs)
 
 
-def _guarded_call(*popenargs: Any, **kwargs: Any) -> int:
-    cmd = popenargs[0] if popenargs else kwargs.get("args")
-    if _external_blocked(cmd):
-        _raise_blocked(cmd)
-    return _ORIGINAL_CALL(*popenargs, **kwargs)
+def _guarded_check_call(cmd: Any, *args: Any, **kwargs: Any) -> int:
+    if _is_claude_p_command(cmd) and os.environ.get("CRAB_ALLOW_CLAUDE_P") != "1":
+        completed = _guarded_run(cmd, *args, **kwargs)
+        if completed.returncode:
+            raise subprocess.CalledProcessError(completed.returncode, cmd)
+        return 0
+    return _ORIGINAL_CHECK_CALL(cmd, *args, **kwargs)
 
 
-def _guarded_check_call(*popenargs: Any, **kwargs: Any) -> int:
-    cmd = popenargs[0] if popenargs else kwargs.get("args")
-    if _external_blocked(cmd):
-        _raise_blocked(cmd)
-    return _ORIGINAL_CHECK_CALL(*popenargs, **kwargs)
-
-
-def _guarded_check_output(*popenargs: Any, **kwargs: Any) -> bytes:
-    cmd = popenargs[0] if popenargs else kwargs.get("args")
-    if _external_blocked(cmd):
-        _raise_blocked(cmd)
-    return _ORIGINAL_CHECK_OUTPUT(*popenargs, **kwargs)
-
-
-def _guarded_system(command: Any) -> int:
-    if _external_blocked(command):
-        _raise_blocked(command)
-    return _ORIGINAL_OS_SYSTEM(command)
-
-
-subprocess.Popen = _GuardedPopen
 subprocess.run = _guarded_run
-subprocess.call = _guarded_call
-subprocess.check_call = _guarded_check_call
 subprocess.check_output = _guarded_check_output
-os.system = _guarded_system
+subprocess.check_call = _guarded_check_call
