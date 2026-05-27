@@ -1,220 +1,255 @@
-"""Evidence-conflict release gate.
+"""Release-gate evidence conflict arbitration.
 
-This module is intentionally small and dependency-free so releasegate can import
-it without pulling in the wider arbitration stack.
+This module protects signing/release issuance when evidence disagrees.
+The critical regression covered here is:
 
-Policy:
-- Evidence is grouped by capability.
-- If newer evidence and older evidence for the same capability disagree on the
-  capability verdict, the release must not pass silently.
-- A conflict may pass only when it is explicitly arbitrated, or when the release
-  context declares a downgrade/disablement for that capability.
+    expired success evidence + fresh failure evidence => DO NOT ISSUE
 
-Accepted evidence record shapes:
-- dicts with keys such as capability/skill/name, verdict/status/outcome/pass,
-  timestamp/created_at/ts, evidence_id/id.
-- arbitrary objects exposing similarly named attributes.
+A stale success must never outvote a fresh failure.  Callers may use
+``releasegate_allows``/``should_issue_release`` before producing any signed
+release artifact, or ``issue_release_certificate`` when they want a tiny
+in-process certificate object.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from time import time
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 
-_POSITIVE = {"pass", "passed", "ok", "green", "success", "succeeded", "valid", "true", "yes", "1"}
-_NEGATIVE = {"fail", "failed", "bad", "red", "error", "invalid", "false", "no", "0", "regress", "regressed"}
+DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 @dataclass(frozen=True)
-class EvidenceConflict:
-    """A same-capability contradiction between older and newer evidence."""
+class EvidenceItem:
+    """Normalized evidence used by the conflict-aware release gate."""
 
-    capability: str
-    old_evidence_id: str
-    new_evidence_id: str
-    old_verdict: str
-    new_verdict: str
+    name: str
+    passed: bool
+    observed_at: float
+    max_age_seconds: float = DEFAULT_MAX_AGE_SECONDS
+    detail: str = ""
 
-    def to_dict(self) -> Dict[str, str]:
-        return {
-            "capability": self.capability,
-            "old_evidence_id": self.old_evidence_id,
-            "new_evidence_id": self.new_evidence_id,
-            "old_verdict": self.old_verdict,
-            "new_verdict": self.new_verdict,
-        }
+    @property
+    def expires_at(self) -> float:
+        return self.observed_at + self.max_age_seconds
+
+    def is_fresh(self, now: Optional[float] = None) -> bool:
+        if now is None:
+            now = time()
+        return self.expires_at >= now
 
 
-def _get(record: Any, names: Sequence[str], default: Any = None) -> Any:
-    if isinstance(record, Mapping):
-        for name in names:
-            if name in record:
-                return record[name]
+@dataclass(frozen=True)
+class EvidenceConflictDecision:
+    """Arbitration result for release-gate evidence."""
+
+    allowed: bool
+    reason: str
+    fresh_failures: Tuple[EvidenceItem, ...] = ()
+    stale_successes: Tuple[EvidenceItem, ...] = ()
+    stale_failures: Tuple[EvidenceItem, ...] = ()
+    fresh_successes: Tuple[EvidenceItem, ...] = ()
+
+    @property
+    def blocked(self) -> bool:
+        return not self.allowed
+
+
+def _read_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
         return default
-    for name in names:
-        if hasattr(record, name):
-            return getattr(record, name)
-    return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "pass", "passed", "ok", "success"}
+    return bool(value)
 
 
-def _capability(record: Any) -> Optional[str]:
-    value = _get(record, ("capability", "skill", "ability", "feature", "name", "target"))
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
+def _read_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
-def _evidence_id(record: Any, fallback: int) -> str:
-    value = _get(record, ("evidence_id", "id", "key", "uid", "hash"))
-    if value is None:
-        return "evidence-%d" % fallback
-    text = str(value).strip()
-    return text or ("evidence-%d" % fallback)
+def normalize_evidence(item: Any, *, default_name: str = "evidence") -> EvidenceItem:
+    """Convert common evidence shapes into :class:`EvidenceItem`.
 
-
-def _timestamp(record: Any, fallback: int) -> Tuple[int, str]:
-    value = _get(record, ("timestamp", "created_at", "time", "ts", "observed_at", "sequence"))
-    if value is None:
-        return (0, "%012d" % fallback)
-    if isinstance(value, (int, float)):
-        return (1, "%020.6f" % float(value))
-    return (1, str(value))
-
-
-def _verdict(record: Any) -> Optional[str]:
-    raw = _get(record, ("verdict", "status", "outcome", "result", "passed", "pass", "ok"))
-    if raw is None:
-        return None
-    if isinstance(raw, bool):
-        return "pass" if raw else "fail"
-    text = str(raw).strip().lower()
-    if not text:
-        return None
-    if text in _POSITIVE:
-        return "pass"
-    if text in _NEGATIVE:
-        return "fail"
-    return text
-
-
-def _is_contradiction(left: str, right: str) -> bool:
-    if left == right:
-        return False
-    return {left, right} == {"pass", "fail"}
-
-
-def _normalise_names(values: Optional[Iterable[Any]]) -> Set[str]:
-    result: Set[str] = set()
-    if not values:
-        return result
-    for value in values:
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            result.add(text)
-    return result
-
-
-def find_evidence_conflicts(evidence: Iterable[Any]) -> List[EvidenceConflict]:
-    """Return contradictory old/new evidence pairs grouped by capability."""
-
-    grouped: Dict[str, List[Tuple[Tuple[int, str], int, Any]]] = {}
-    for index, record in enumerate(evidence or ()):
-        cap = _capability(record)
-        verdict = _verdict(record)
-        if not cap or verdict not in {"pass", "fail"}:
-            continue
-        grouped.setdefault(cap, []).append((_timestamp(record, index), index, record))
-
-    conflicts: List[EvidenceConflict] = []
-    for cap, rows in grouped.items():
-        rows.sort(key=lambda item: (item[0], item[1]))
-        for pos in range(1, len(rows)):
-            old_record = rows[pos - 1][2]
-            new_record = rows[pos][2]
-            old_verdict = _verdict(old_record)
-            new_verdict = _verdict(new_record)
-            if old_verdict and new_verdict and _is_contradiction(old_verdict, new_verdict):
-                conflicts.append(
-                    EvidenceConflict(
-                        capability=cap,
-                        old_evidence_id=_evidence_id(old_record, rows[pos - 1][1]),
-                        new_evidence_id=_evidence_id(new_record, rows[pos][1]),
-                        old_verdict=old_verdict,
-                        new_verdict=new_verdict,
-                    )
-                )
-    return conflicts
-
-
-def evidence_conflict_releasegate(
-    evidence: Iterable[Any],
-    *,
-    arbitrated_capabilities: Optional[Iterable[Any]] = None,
-    downgraded_capabilities: Optional[Iterable[Any]] = None,
-) -> Dict[str, Any]:
-    """Evaluate the conflict gate.
-
-    Returns a releasegate-style dictionary. ``allow`` is false whenever a
-    same-capability evidence contradiction is neither arbitrated nor downgraded.
+    Accepted inputs:
+    - EvidenceItem
+    - mapping with keys such as name/check/id, passed/ok/success, observed_at/ts/timestamp,
+      max_age_seconds/ttl/fresh_for, detail/reason/message
+    - object with similarly named attributes
     """
 
-    arbitrated = _normalise_names(arbitrated_capabilities)
-    downgraded = _normalise_names(downgraded_capabilities)
-    conflicts = find_evidence_conflicts(evidence)
-    blocking = [
-        conflict
-        for conflict in conflicts
-        if conflict.capability not in arbitrated and conflict.capability not in downgraded
-    ]
+    if isinstance(item, EvidenceItem):
+        return item
 
-    return {
-        "gate": "evidence_conflict",
-        "allow": not blocking,
-        "status": "pass" if not blocking else "block",
-        "reason": (
-            "no unresolved evidence conflicts"
-            if not blocking
-            else "unresolved contradictory evidence must be arbitrated or downgraded before release"
-        ),
-        "conflicts": [conflict.to_dict() for conflict in conflicts],
-        "blocking_conflicts": [conflict.to_dict() for conflict in blocking],
-        "arbitrated_capabilities": sorted(arbitrated),
-        "downgraded_capabilities": sorted(downgraded),
-    }
+    if isinstance(item, Mapping):
+        get = item.get
+    else:
+        get = lambda key, default=None: getattr(item, key, default)
 
-
-def releasegate_check(context: Any) -> Dict[str, Any]:
-    """Releasegate hook accepting a loose context mapping/object."""
-
-    evidence = _get(context, ("evidence", "evidence_records", "records"), ())
-    arbitrated = _get(context, ("arbitrated_capabilities", "arbitrated", "conflict_arbitrated"), ())
-    downgraded = _get(context, ("downgraded_capabilities", "downgraded", "degraded", "disabled_capabilities"), ())
-    return evidence_conflict_releasegate(
-        evidence,
-        arbitrated_capabilities=arbitrated,
-        downgraded_capabilities=downgraded,
+    name = str(get("name", get("check", get("id", default_name))))
+    passed = _read_bool(get("passed", get("ok", get("success", False))))
+    observed_at = _read_float(get("observed_at", get("ts", get("timestamp", 0.0))), 0.0)
+    max_age = _read_float(
+        get("max_age_seconds", get("ttl", get("fresh_for", DEFAULT_MAX_AGE_SECONDS))),
+        DEFAULT_MAX_AGE_SECONDS,
+    )
+    detail = str(get("detail", get("reason", get("message", ""))))
+    return EvidenceItem(
+        name=name,
+        passed=passed,
+        observed_at=observed_at,
+        max_age_seconds=max_age,
+        detail=detail,
     )
 
 
-def build_releasegate_check() -> Any:
-    """Return a callable suitable for releasegate registries."""
+def arbitrate_evidence_conflict(
+    evidence: Iterable[Any],
+    *,
+    now: Optional[float] = None,
+) -> EvidenceConflictDecision:
+    """Arbitrate release evidence before signing.
 
-    return releasegate_check
+    Safety rule:
+    - Any fresh failure blocks release.
+    - Stale successes are ignored for permission and recorded as conflict context.
+    - At least one fresh success is required when no fresh failure exists.
+    """
+
+    if now is None:
+        now = time()
+
+    fresh_failures = []
+    stale_successes = []
+    stale_failures = []
+    fresh_successes = []
+
+    for index, raw in enumerate(evidence):
+        item = normalize_evidence(raw, default_name=f"evidence:{index}")
+        fresh = item.is_fresh(now)
+        if item.passed and fresh:
+            fresh_successes.append(item)
+        elif item.passed and not fresh:
+            stale_successes.append(item)
+        elif not item.passed and fresh:
+            fresh_failures.append(item)
+        else:
+            stale_failures.append(item)
+
+    if fresh_failures:
+        names = ", ".join(item.name for item in fresh_failures)
+        stale = ", ".join(item.name for item in stale_successes) or "none"
+        return EvidenceConflictDecision(
+            allowed=False,
+            reason=f"blocked: fresh failure evidence wins over stale success evidence; failures={names}; stale_successes={stale}",
+            fresh_failures=tuple(fresh_failures),
+            stale_successes=tuple(stale_successes),
+            stale_failures=tuple(stale_failures),
+            fresh_successes=tuple(fresh_successes),
+        )
+
+    if not fresh_successes:
+        return EvidenceConflictDecision(
+            allowed=False,
+            reason="blocked: no fresh successful evidence available for release signing",
+            fresh_failures=tuple(fresh_failures),
+            stale_successes=tuple(stale_successes),
+            stale_failures=tuple(stale_failures),
+            fresh_successes=tuple(fresh_successes),
+        )
+
+    return EvidenceConflictDecision(
+        allowed=True,
+        reason="allowed: fresh success evidence present and no fresh failures",
+        fresh_failures=tuple(fresh_failures),
+        stale_successes=tuple(stale_successes),
+        stale_failures=tuple(stale_failures),
+        fresh_successes=tuple(fresh_successes),
+    )
 
 
-check = releasegate_check
-gate = evidence_conflict_releasegate
+def releasegate_allows(evidence: Iterable[Any], *, now: Optional[float] = None) -> bool:
+    """Boolean release gate used by simple callers."""
 
-__all__ = [
-    "EvidenceConflict",
-    "build_releasegate_check",
-    "check",
-    "evidence_conflict_releasegate",
-    "find_evidence_conflicts",
-    "gate",
-    "releasegate_check",
-]
+    return arbitrate_evidence_conflict(evidence, now=now).allowed
+
+
+def should_issue_release(evidence: Iterable[Any], *, now: Optional[float] = None) -> bool:
+    """Compatibility alias for callers phrased around issuance."""
+
+    return releasegate_allows(evidence, now=now)
+
+
+def issue_release_certificate(
+    evidence: Iterable[Any],
+    *,
+    now: Optional[float] = None,
+    subject: str = "release",
+) -> Mapping[str, Any]:
+    """Return a small unsigned certificate only when the conflict gate allows it.
+
+    The function deliberately raises on blocked arbitration so callers cannot
+    accidentally continue with a partially issued release artifact.
+    """
+
+    if now is None:
+        now = time()
+    decision = arbitrate_evidence_conflict(evidence, now=now)
+    if not decision.allowed:
+        raise PermissionError(decision.reason)
+    return {
+        "subject": subject,
+        "issued_at": now,
+        "allowed": True,
+        "reason": decision.reason,
+        "fresh_successes": [item.name for item in decision.fresh_successes],
+    }
+
+
+def expired_success_fresh_failure_fixture(now: float = 1_700_000_000.0) -> Sequence[EvidenceItem]:
+    """Fixture for the release-gate conflict that previously risked mis-issuance."""
+
+    return (
+        EvidenceItem(
+            name="old-green-ci",
+            passed=True,
+            observed_at=now - (2 * DEFAULT_MAX_AGE_SECONDS),
+            max_age_seconds=DEFAULT_MAX_AGE_SECONDS,
+            detail="expired success must not authorize signing",
+        ),
+        EvidenceItem(
+            name="fresh-red-canary",
+            passed=False,
+            observed_at=now - 60,
+            max_age_seconds=DEFAULT_MAX_AGE_SECONDS,
+            detail="fresh failure must block signing",
+        ),
+    )
+
+
+def regression_expired_success_fresh_failure_blocks() -> bool:
+    """Executable regression: stale pass + fresh fail must block release."""
+
+    now = 1_700_000_000.0
+    evidence = expired_success_fresh_failure_fixture(now)
+    decision = arbitrate_evidence_conflict(evidence, now=now)
+    if decision.allowed:
+        raise AssertionError("release gate mis-issued: expired success overrode fresh failure")
+    if not decision.fresh_failures:
+        raise AssertionError("regression fixture did not produce a fresh failure")
+    if not decision.stale_successes:
+        raise AssertionError("regression fixture did not produce a stale success")
+    try:
+        issue_release_certificate(evidence, now=now)
+    except PermissionError:
+        return True
+    raise AssertionError("certificate was issued despite conflicting fresh failure")
+
+
+if __name__ == "__main__":
+    regression_expired_success_fresh_failure_blocks()
+    print("ok: expired success + fresh failure blocks release signing")
