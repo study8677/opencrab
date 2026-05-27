@@ -224,6 +224,17 @@ CLAIMS: list[Claim] = [
         risk=2.0,
     ),
     Claim(
+        name="coldstart_drill",
+        # 账本冷启动一致性演练:带一本来历不明的账本重新醒来时,封印能各按其分处置——
+        # 空账本→自建(给空账本立起可校验基准)、旧基准→迁移(判旧版本而非篡改、免 force 重封)、
+        # 改过了→拒伪(判篡改报警且非 force 拒绝重封洗白)。复跑命令验证三态判决各得其位、
+        # 互不相同——记忆与证据不可信,自主进化就失了根,这条根要每日可见地守住。
+        asserts="冷启动三态各按其分:空账本能自建基准、旧封印格式判旧版本能迁移重封、篡改判伪且拒绝无 force 洗白",
+        argv=_PY + ["coldstart_drill.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
+    Claim(
         name="handsdojo",
         # 自生手失败样本库:brain-only 改码「修不动」自动封成可复跑(replay)可训练(coach)的训练题。
         # 同伤只封一次,招式库每长一招就能 --replay-all 看又填平了哪几道旧坑。复跑命令验证
