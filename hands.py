@@ -327,8 +327,7 @@ def _brain_feature_preview(task: str, repo: pathlib.Path) -> dict:
 
 
 def _brain_feature_patch(task: str, repo: pathlib.Path) -> dict:
-    """自生手·特性级：用自己的脑(brain)针对意图产出代码改动、亲手写进文件。
-    这是它独立做真进化(造模块/改逻辑)的本事——不再雇任何外援。"""
+    """自生手·特性级：用自己的脑产补丁；先过 AST/试衣间/replay 三闸，才落盘。"""
     try:
         from crab import brain   # 延迟 import，避开与 crab 的循环依赖
     except Exception as e:   # noqa: BLE001
@@ -345,9 +344,35 @@ def _brain_feature_patch(task: str, repo: pathlib.Path) -> dict:
         现在输出你的代码改动(用 NOTE / <<<WRITE>>> / <<<EDIT>>> 那套格式)。""")
     text, _tok = brain(_CODER_SYSTEM, prompt)
     plan = _parse_changes(text)
+    if not plan.get("changes"):
+        return {"ok": False, "applied": [], "note": plan.get("note", "") or "brain 未产出补丁块"}
+
+    import ast
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="opencrab-fitroom-") as td:
+        room = pathlib.Path(td) / "repo"
+        shutil.copytree(repo, room, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        trial_applied = _apply_changes(plan, room)
+        if not trial_applied:
+            return {"ok": False, "applied": [], "note": "试衣间未能应用任何补丁"}
+
+        for ch in plan.get("changes", []):
+            rel = str(ch.get("path", "")).lstrip("/")
+            if rel.endswith(".py"):
+                target = room / rel
+                try:
+                    ast.parse(target.read_text("utf-8"), filename=rel)
+                except Exception as e:   # noqa: BLE001
+                    return {"ok": False, "applied": [], "note": f"AST 定位闸未过：{rel}({type(e).__name__})"}
+
+        replay_ok, replay_note = _self_test(room)
+        if not replay_ok:
+            return {"ok": False, "applied": [], "note": f"回放闸未过：{replay_note}"}
+
     applied = _apply_changes(plan, repo)
     return {"ok": bool(applied), "applied": applied,
-            "note": plan.get("note", "") or f"产出 {len(applied)} 处改动"}
+            "note": plan.get("note", "") or f"三闸通过后产出 {len(applied)} 处改动"}
 
 
 def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
