@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 
 
 def has_hands(executor: str = "claude") -> bool:
@@ -184,6 +185,113 @@ def _brain_attempt(repo: pathlib.Path) -> dict:
             "trace": trace, "files": fixed_files}
 
 
+# ── 自生手·特性级：用自己的脑写功能(造模块/改逻辑)，彻底不雇外援 ───────────
+_CODER_SYSTEM = textwrap.dedent("""\
+    你是 opencrab 的手——你亲手写 Python 代码来进化你自己，不再依赖任何外部工具。
+    你改的就是你自己的源码，务必保证改完 `python -m py_compile` 与 `import crab` 都能通过。
+
+    只用下面这种纯文本块输出改动，不要 JSON、不要 markdown 围栏、不要多余解释：
+    先一行 `NOTE: 我这次做了什么`，然后是若干改动块，每块二选一——
+      新建或整体重写一个(较小)文件：
+        <<<WRITE path=相对路径.py>>>
+        (该文件的完整新内容)
+        <<<END>>>
+      精确修改已有文件的一个片段：
+        <<<EDIT path=相对路径.py>>>
+        ---OLD---
+        (要被替换的原文片段，必须在文件中逐字一致、且唯一出现)
+        ---NEW---
+        (替换后的片段)
+        <<<END>>>
+    铁律：改动小而准、语法正确；改大文件(尤其 crab.py)务必用 EDIT 给小片段、别整体重写；
+    OLD 必须与文件现有内容逐字一致(含缩进)且唯一，否则该处会被跳过；没把握就只动一小步。""")
+
+
+def _gather_context(task: str, repo: pathlib.Path) -> tuple[list[str], str]:
+    """先把 task 点到名、且已存在的 .py 读出来给脑看(要改它，得先看它)。"""
+    files = sorted(p.name for p in repo.glob("*.py"))
+    blobs, seen = [], set()
+    for name in re.findall(r"[\w./-]+\.py", task):
+        name = name.lstrip("./")
+        if name in seen:
+            continue
+        seen.add(name)
+        p = repo / name
+        try:
+            if p.exists() and p.is_file() and p.stat().st_size < 24000:
+                blobs.append(f"# ===== 现有 {name}（要改它就基于这份原文给 EDIT）=====\n"
+                             + p.read_text("utf-8"))
+        except OSError:
+            pass
+    return files, "\n\n".join(blobs)
+
+
+def _parse_changes(text: str) -> dict:
+    """从脑的输出里解析出 WRITE/EDIT 改动块(文本哨兵格式，对大段代码比 JSON 稳)。"""
+    text = text or ""
+    note_m = re.search(r"NOTE:\s*(.+)", text)
+    note = note_m.group(1).strip() if note_m else ""
+    changes = []
+    for m in re.finditer(r"<<<WRITE path=(.+?)>>>\n(.*?)\n<<<END>>>", text, re.DOTALL):
+        changes.append({"action": "write", "path": m.group(1).strip(), "content": m.group(2)})
+    for m in re.finditer(r"<<<EDIT path=(.+?)>>>\n---OLD---\n(.*?)\n---NEW---\n(.*?)\n<<<END>>>",
+                         text, re.DOTALL):
+        changes.append({"action": "edit", "path": m.group(1).strip(),
+                        "old": m.group(2), "new": m.group(3)})
+    return {"changes": changes, "note": note}
+
+
+def _apply_changes(plan: dict, repo: pathlib.Path) -> list[str]:
+    """自己的手：把脑拟好的改动真正写进文件(单处出错不拖垮整批)。"""
+    applied = []
+    for ch in plan.get("changes", []):
+        try:
+            rel = str(ch.get("path", "")).lstrip("/")
+            if not rel or ".." in rel or not rel.endswith((".py", ".md", ".txt", ".json")):
+                continue
+            path = repo / rel
+            if ch.get("action") == "write" and "content" in ch:
+                content = ch["content"]
+                if not content.endswith("\n"):
+                    content += "\n"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, "utf-8")
+                applied.append(f"write {rel}")
+            elif ch.get("action") == "edit" and path.exists():
+                cur = path.read_text("utf-8")
+                old, new = ch.get("old", ""), ch.get("new", "")
+                if old and cur.count(old) == 1:
+                    path.write_text(cur.replace(old, new), "utf-8")
+                    applied.append(f"edit {rel}")
+        except Exception:   # noqa: BLE001
+            continue
+    return applied
+
+
+def _brain_feature_patch(task: str, repo: pathlib.Path) -> dict:
+    """自生手·特性级：用自己的脑(brain)针对意图产出代码改动、亲手写进文件。
+    这是它独立做真进化(造模块/改逻辑)的本事——不再雇任何外援。"""
+    try:
+        from crab import brain   # 延迟 import，避开与 crab 的循环依赖
+    except Exception as e:   # noqa: BLE001
+        return {"ok": False, "applied": [], "note": f"够不到自己的脑({type(e).__name__})"}
+    files, context = _gather_context(task, repo)
+    prompt = textwrap.dedent(f"""\
+        你要亲手实施这个进化意图：
+        {task}
+
+        你领地里现有的 .py：{', '.join(files)}
+
+        {context if context else '(没有点名要先读的现有文件；新建模块就直接 WRITE)'}
+
+        现在输出你的代码改动(用 NOTE / <<<WRITE>>> / <<<EDIT>>> 那套格式)。""")
+    text, _tok = brain(_CODER_SYSTEM, prompt)
+    plan = _parse_changes(text)
+    applied = _apply_changes(plan, repo)
+    return {"ok": bool(applied), "applied": applied,
+            "note": plan.get("note", "") or f"产出 {len(applied)} 处改动"}
+
+
 def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
               budget_usd: float = 0.5, dry_run: bool = False,
               integrate: str = "branch") -> dict:
@@ -209,27 +317,19 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
               "available": available, "integrate": integrate, "changed": False,
               "ok": False, "task": task, "base_sha": base_sha}   # task/base_sha 供 patchnote 写「依据」与「回滚点」
     try:
-        # 1) 自生手优先：先走 brain-only 补丁，失败才降级外援，并记录原因（断奶从默认路径开始）
-        brain = _brain_attempt(repo)
-        result["brain_reason"] = brain["reason"]
-        result["brain_trace"] = brain["trace"]
-        result["brain_failed_samples"] = brain.get("failed_samples", [])  # 修不动的真伤 → 封进失败样本库
-        if brain["ok"]:
-            result["mode"] = "brain"   # brain 独立动手，不雇外援、不花一分钱
+        # 1) 自生手全程自己来：先修语法级真伤(如有)，否则用自己的脑产特性级补丁写功能——彻底不雇外援
+        fix = _brain_attempt(repo)
+        result["brain_reason"] = fix["reason"]
+        result["brain_trace"] = fix["trace"]
+        result["brain_failed_samples"] = fix.get("failed_samples", [])
+        if fix["ok"]:
+            result["mode"] = "brain-syntax"      # 自己修好了语法级真伤
         else:
-            # 降级外援：brain 没解，记下原因，再雇爪子
-            if not available:          # 连外援都没有 → 无路可走，丢弃空分支保持干净
-                result["mode"] = "downgrade-unavailable"
-                _git(repo, "checkout", "-f", base)
-                _git(repo, "branch", "-D", branch)
-                result["note"] = (f"[brain 未解：{brain['reason']}；且未找到 {executor} CLI] "
-                                  f"本应（{integrate} 模式）实施：{task[:70]}")
-                return result
-            result["mode"] = "hired"
-            # 雇佣爪子改文件：只给「改文件」最小权限，不碰 git / Bash / 联网
-            cmd = _plan_cmd(task, executor, budget_usd)  # 与预演看到的命令完全一致
-            proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, timeout=900)
-            result["exit"] = proc.returncode
+            # 没有语法伤要修(或修不动) → 这是特性级进化，用自己的脑亲手产补丁写功能
+            feat = _brain_feature_patch(task, repo)
+            result["mode"] = "brain-feature"
+            result["feature_note"] = feat.get("note", "")
+            result["feature_applied"] = feat.get("applied", [])
 
         # 2) opencrab 亲自把改动提交到分支
         _git(repo, "add", "-A")
