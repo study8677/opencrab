@@ -16,28 +16,74 @@ logger = logging.getLogger(__name__)
 TASKS: List[Dict[str, Any]] = [
     {
         "module": "evidence_freshness",
-        "func_name": "run",  # 假设 evidence_freshness.run() 执行刷新
+        "func_name": "run",
         "desc": "刷新证据新鲜度"
     },
     {
         "module": "showcase_refresher",
-        "func_name": "run",  # 假设 showcase_refresher.run() 执行刷新
+        "func_name": "run",
         "desc": "刷新展示站数字"
     },
     {
         "module": "organ_autodiag",
-        "func_name": "run",  # 假设 organ_autodiag.run() 执行健康检查
+        "func_name": "run",
         "desc": "执行模块健康检查"
     },
     {
         "module": "checkup",
-        "func_name": "run",  # 假设 checkup.run() 执行系统检查
+        "func_name": "run",
         "desc": "执行系统检查"
     },
     {
         "module": "health",
-        "func_name": "run",  # 假设 health.run() 执行健康监控
+        "func_name": "run",
         "desc": "执行健康监控"
+    },
+    # ---- 以下为本次审计补上的缺口 ----
+    {
+        "module": "driftwatch",
+        "func_name": "run",
+        "desc": "监控领地漂移"
+    },
+    {
+        "module": "trustscore",
+        "func_name": "run",
+        "desc": "更新信任评分"
+    },
+    {
+        "module": "budget",
+        "func_name": "run",
+        "desc": "检查资源预算"
+    },
+    {
+        "module": "consistency",
+        "func_name": "run",
+        "desc": "执行一致性检查"
+    },
+    {
+        "module": "sentinel",
+        "func_name": "run",
+        "desc": "哨兵巡检"
+    },
+    {
+        "module": "usageheat",
+        "func_name": "run",
+        "desc": "监控使用热度"
+    },
+    {
+        "module": "secretscan",
+        "func_name": "run",
+        "desc": "扫描敏感信息泄露"
+    },
+    {
+        "module": "licenseguard",
+        "func_name": "run",
+        "desc": "许可证合规检查"
+    },
+    {
+        "module": "evidence_repair_queue",
+        "func_name": "run",
+        "desc": "处理证据修复队列"
     },
 ]
 
@@ -102,7 +148,71 @@ def auto_integrate_heartbeat() -> None:
 # 在模块导入时尝试自动集成
 auto_integrate_heartbeat()
 
+def audit_heartbeat_coverage() -> None:
+    """
+    审计心跳覆盖情况：
+    1. 扫描领地内所有 .py 模块，找出有 run() 但未被心跳注册的「漏网之鱼」
+    2. 检查心跳注册的模块是否真的存在
+    """
+    import os
+    import inspect
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    registered = {t["module"] for t in TASKS}
+
+    # 扫描领地内所有模块
+    unregistered_with_run = []
+    for fname in os.listdir(base_dir):
+        if not fname.endswith(".py") or fname.startswith("_") or fname == "heartbeat.py":
+            continue
+        mod_name = fname[:-3]
+        if mod_name in registered:
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(mod_name, os.path.join(base_dir, fname))
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                if callable(getattr(mod, "run", None)):
+                    unregistered_with_run.append(mod_name)
+        except Exception:
+            pass
+
+    # 检查注册的模块是否存在文件
+    missing_files = []
+    for t in TASKS:
+        fpath = os.path.join(base_dir, t["module"] + ".py")
+        if not os.path.exists(fpath):
+            missing_files.append(t["module"])
+
+    print("=" * 50)
+    print("💓 心跳覆盖审计报告")
+    print("=" * 50)
+    print(f"\n📋 已注册任务: {len(TASKS)} 项")
+    for t in TASKS:
+        print(f"   ✓ {t['module']}: {t['desc']}")
+
+    if unregistered_with_run:
+        print(f"\n⚠️  有 run() 但未被心跳覆盖的模块 ({len(unregistered_with_run)} 个):")
+        for m in unregistered_with_run:
+            print(f"   ✗ {m}")
+    else:
+        print("\n✅ 所有有 run() 的模块都已被心跳覆盖")
+
+    if missing_files:
+        print(f"\n❌ 心跳注册了但文件不存在的模块 ({len(missing_files)} 个):")
+        for m in missing_files:
+            print(f"   ✗ {m}")
+    else:
+        print("\n✅ 所有注册模块的文件都存在")
+    print("=" * 50)
+
+
 # 命令行接口：直接运行 python heartbeat.py 可手动触发
 if __name__ == "__main__":
+    import sys
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    run_heartbeat()
+    if "--audit" in sys.argv:
+        audit_heartbeat_coverage()
+    else:
+        run_heartbeat()
