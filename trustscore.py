@@ -29,11 +29,20 @@
 (state/ 下的快照，每次扫描重写)——`--reverify` 会照队列真的去复跑 evidence 的验证命令，
 把最不可信的能力先重新证一遍。
 
+**续验(--renew)**：复验是「亡羊补牢」——等证据掉出信任线才去补。可证据腐烂是渐进的，
+与其等一条能力真过期、掉成 🟡 才慌忙补救，不如在它**还 🟢 新鲜、但时效已用掉大半**时
+就提前把证据续新。续验专挑这批「将过期」的(仍新鲜、过期度 ≥ `RENEW_LEAD`)，按「逼近
+过期度 × 风险」排出最小一批先复跑 evidence 的验证命令、把新证据写回账本——让强始终
+建立在新鲜证据上。与复验互补：复验补「已不可信」的，续验续「还可信但快凉」的。
+
 用法：
     python trustscore.py                # 给每条能力打信任分，并刷新复验队列
     python trustscore.py --quiet        # 只在有存疑/不可信时说话(适合钩子 / CI)
     python trustscore.py --queue        # 只看当前复验队列(谁最该被重证)
     python trustscore.py --reverify [N] # 照队列复跑最不可信的前 N 条(默认 3)，再重新打分
+    python trustscore.py --expiring     # 只看「将过期」清单(仍新鲜但时效快用尽，该提前续验)
+    python trustscore.py --renew [N]    # 自动续验最将过期的前 N 条(默认 3)：提前复跑、把证据写回
+    python trustscore.py --selfcheck    # 自检：将过期识别与续验排序的纯逻辑(不碰真账本)
     python trustscore.py --json         # 机读：每条声明的三维分 + 合成信任分 + 档位
 
 零第三方依赖，纯标准库。信任分与队列落在被 .gitignore 的 state/ 里，写盘失败绝不反噬生命。
@@ -64,6 +73,8 @@ COVERAGE_SAT = 6       # 覆盖面饱和点：验到约这么多次独立样本�
 TRUST_OK = 0.70        # 🟢可信下限
 TRUST_DOUBT = 0.40     # 🟡存疑下限(低于此 = 🔴不可信)
 REVERIFY_FLOOR = TRUST_OK   # 低于这条线就排进复验队列(存疑与不可信都该重证)
+RENEW_LEAD = 0.8       # 续验提前量:一条新鲜证据用掉这个比例的时效就算「将过期」,该提前续。
+                       # 0.8 留出最后两成时效当缓冲——续验失败/没排上也还有余量,不会立刻塌成🟡。
 
 # 三维权重：可复现性最重(「能不能再跑成」是信任的核心)，新鲜度次之，覆盖面再次。
 W_FRESH, W_REPRO, W_COVER = 1.0, 1.3, 0.8
@@ -288,13 +299,85 @@ def reverify(budget: int = 3, *, now: float | None = None) -> dict:
             "deltas": deltas}
 
 
+# ── 续验：仍新鲜但将过期的，提前最小复跑，把证据写回账本 ──────────────────
+def renew_urgency(status: evidence.Status, claim: evidence.Claim) -> float:
+    """这条声明此刻「该不该提前续验」的紧迫度：仅对仍🟢新鲜、且过期度 ≥ RENEW_LEAD 的算正分。
+
+    过期度 = 距上次验证天数 ÷ 时效。恰到提前线给 0，越逼近真过期(→1)分越高，再乘风险权重。
+    过期/失守/未证不在续验射程内(它们该走 reverify / 巡逻补救)，一律 0。
+    """
+    if status.state != "fresh" or status.age_days is None or claim.ttl_days <= 0:
+        return 0.0
+    overdue = status.age_days / claim.ttl_days
+    if overdue < RENEW_LEAD:
+        return 0.0
+    span = max(1e-9, 1.0 - RENEW_LEAD)
+    closeness = min(1.0, (overdue - RENEW_LEAD) / span)
+    return closeness * claim.risk
+
+
+def expiring(statuses: list[evidence.Status],
+             claims: list[evidence.Claim] | None = None) -> list[dict]:
+    """挑出「将过期」的声明(仍新鲜但时效快用尽)，按续验紧迫度(逼近过期度×风险)降序排。"""
+    by_name = {c.name: c for c in (evidence.CLAIMS if claims is None else claims)}
+    out = []
+    for s in statuses:
+        c = by_name.get(s.name)
+        if c is None:
+            continue
+        u = renew_urgency(s, c)
+        if u > 0:
+            overdue = (s.age_days or 0.0) / c.ttl_days if c.ttl_days > 0 else 0.0
+            out.append({"name": s.name, "urgency": round(u, 4),
+                        "overdue": round(overdue, 4), "risk": c.risk,
+                        "age_days": round(s.age_days, 4) if s.age_days is not None else None,
+                        "ttl_days": c.ttl_days})
+    out.sort(key=lambda d: (-d["urgency"], d["name"]))
+    return out
+
+
+def renew(budget: int = 3, *, now: float | None = None) -> dict:
+    """自动续验最将过期的前 budget 条：提前复跑 evidence 的验证命令、把新证据写回账本。
+
+    流程：先识别「将过期」清单→取最紧迫的前 budget 条→真的复跑 + 落账(evidence.verify)
+    →复跑后重新打分，报告各自新鲜度被续回了多少。复跑过的多半已离开将过期区。全程尽力而为。
+    """
+    now = time.time() if now is None else now
+    before = assess(now=now)
+    before_by = {t.name: t for t in before}
+    statuses = evidence.status(now=now)
+    by_name = {c.name: c for c in evidence.CLAIMS}
+    soon = expiring(statuses)
+    picked = [item["name"] for item in soon[:max(0, budget)]]
+    results = []
+    for name in picked:
+        claim = by_name.get(name)
+        if claim is None:
+            continue
+        rec = evidence.verify(claim)   # 真的复跑 + 落账，把证据续新
+        results.append({"name": name, "ok": rec["ok"]})
+    after = assess()                   # 续验后重新打分(读到刚落的新记录)
+    after_by = {t.name: t for t in after}
+    deltas = [{"name": n,
+               "fresh_before": round(before_by[n].freshness, 4) if n in before_by else None,
+               "fresh_after": round(after_by[n].freshness, 4) if n in after_by else None,
+               "score_before": round(before_by[n].score, 4) if n in before_by else None,
+               "score_after": round(after_by[n].score, 4) if n in after_by else None}
+              for n in picked]
+    write_queue(build_queue(after))    # 顺手刷新复验队列快照
+    return {"budget": budget, "candidates": len(soon), "renewed": picked,
+            "failed": [r["name"] for r in results if not r["ok"]],
+            "deltas": deltas}
+
+
 # ── 展示 ──────────────────────────────────────────────────────────────
 def _bar(v: float, width: int = 10) -> str:
     filled = int(round(v * width))
     return "█" * filled + "·" * (width - filled)
 
 
-def _print_assessment(trusts: list[Trust], queue: list[dict]) -> None:
+def _print_assessment(trusts: list[Trust], queue: list[dict],
+                      soon: list[dict] | None = None) -> None:
     print(f"🎚️  opencrab 能力信任分（{len(trusts)} 条声明）\n")
     by_name = {c.name: c for c in evidence.CLAIMS}
     for t in trusts:
@@ -317,18 +400,100 @@ def _print_assessment(trusts: list[Trust], queue: list[dict]) -> None:
         print("    跑 `python trustscore.py --reverify` 照队列重证最不可信的几条。")
     else:
         print("\n🎚️  每条能力的证据都够可信，复验队列为空。")
+    if soon:
+        print(f"\n  ⏳ 将过期（{len(soon)} 条，仍🟢新鲜但时效快用尽，宜提前续验）：")
+        for item in soon:
+            print(f"      {item['name']}（已用 {item['overdue']:.0%} 时效，"
+                  f"紧迫度 {item['urgency']:.2f}）")
+        print("    跑 `python trustscore.py --renew` 提前续验，把证据续新、免得掉成🟡。")
 
 
 def manifest() -> dict:
-    """导出纯数据：每条声明的三维分 + 信任分 + 当前复验队列(给 health / 外部消费)。"""
+    """导出纯数据：每条声明的三维分 + 信任分 + 复验队列 + 将过期清单(给 health / 外部消费)。"""
     trusts = assess()
     return {"trust": [t.to_meta() for t in trusts],
             "queue": build_queue(trusts),
+            "expiring": expiring(evidence.status()),
             "params": {"trail_days": TRAIL_DAYS, "window_max": WINDOW_MAX,
                        "trust_ok": TRUST_OK, "trust_doubt": TRUST_DOUBT,
-                       "reverify_floor": REVERIFY_FLOOR,
+                       "reverify_floor": REVERIFY_FLOOR, "renew_lead": RENEW_LEAD,
                        "weights": {"freshness": W_FRESH, "reproducibility": W_REPRO,
                                    "coverage": W_COVER}}}
+
+
+def _mk_status(name: str, state: str, *, age_days: float, ttl_days: float) -> evidence.Status:
+    """造一条合成状态(自检用)：不碰真账本，只喂给纯逻辑函数验排序与边界。"""
+    return evidence.Status(name=name, state=state,
+                           last_ok=(state == "fresh"),
+                           verified_at=None, age_days=age_days,
+                           ttl_days=ttl_days, detail="")
+
+
+def selfcheck(quiet: bool = False) -> bool:
+    """自检：将过期识别与续验排序的纯逻辑(全程合成数据，不碰真账本、不复跑)。
+
+    钉死四件事：①只挑仍🟢新鲜且过期度 ≥ RENEW_LEAD 的；②恰在提前线给 0(不打扰)；
+    ③越逼近真过期紧迫度越高、同等逼近度按风险排；④过期/失守/未证不入续验射程。
+    """
+    failures: list[str] = []
+
+    def check(cond: bool, msg: str) -> None:
+        if not cond:
+            failures.append(msg)
+
+    ttl = 10.0
+    claims = [
+        evidence.Claim("c_safe", "刚验过没多久", [], ttl, risk=1.0),     # overdue 0.3 → 不续
+        evidence.Claim("c_edge", "恰到提前线", [], ttl, risk=1.0),        # overdue 0.8 → 0,不入
+        evidence.Claim("c_soon_lo", "将过期·低风险", [], ttl, risk=1.0),  # overdue 0.9
+        evidence.Claim("c_soon_hi", "将过期·高风险", [], ttl, risk=2.0),  # overdue 0.9
+        evidence.Claim("c_stale", "已过期", [], ttl, risk=3.0),           # stale,不入
+        evidence.Claim("c_broken", "已失守", [], ttl, risk=3.0),          # broken,不入
+        evidence.Claim("c_unproven", "未证", [], ttl, risk=3.0),          # unproven,不入
+    ]
+    statuses = [
+        _mk_status("c_safe", "fresh", age_days=3.0, ttl_days=ttl),
+        _mk_status("c_edge", "fresh", age_days=8.0, ttl_days=ttl),
+        _mk_status("c_soon_lo", "fresh", age_days=9.0, ttl_days=ttl),
+        _mk_status("c_soon_hi", "fresh", age_days=9.0, ttl_days=ttl),
+        _mk_status("c_stale", "stale", age_days=15.0, ttl_days=ttl),
+        _mk_status("c_broken", "broken", age_days=9.5, ttl_days=ttl),
+        evidence.Status("c_unproven", "unproven", None, None, None, ttl, ""),
+    ]
+    by_name = {c.name: c for c in claims}
+
+    # ① + ④：将过期清单只含两条仍新鲜、已逼近过期的；其余各态都被挡在外。
+    names = [d["name"] for d in expiring(statuses, claims)]
+    check(names == ["c_soon_hi", "c_soon_lo"],
+          f"将过期清单应为 [c_soon_hi, c_soon_lo](按紧迫度降序)，实得 {names}")
+
+    # ② 恰在提前线(overdue == RENEW_LEAD) → 紧迫度 0，不打扰。
+    u_edge = renew_urgency(statuses[1], by_name["c_edge"])
+    check(u_edge == 0.0, f"恰到提前线应给 0，实得 {u_edge}")
+
+    # ③ 同等逼近度下，风险高的更紧迫；且续验紧迫度随逼近真过期单调上升。
+    u_lo = renew_urgency(statuses[2], by_name["c_soon_lo"])
+    u_hi = renew_urgency(statuses[3], by_name["c_soon_hi"])
+    check(u_hi > u_lo, f"同等逼近度下高风险应更紧迫：hi={u_hi} 应 > lo={u_lo}")
+    # overdue 0.9、提前线 0.8、span 0.2 → closeness 0.5；低风险 risk=1 → 0.5。
+    check(abs(u_lo - 0.5) < 1e-9, f"c_soon_lo 紧迫度应为 0.5，实得 {u_lo}")
+    nearer = renew_urgency(_mk_status("x", "fresh", age_days=9.8, ttl_days=ttl),
+                           evidence.Claim("x", "", [], ttl, risk=1.0))
+    check(nearer > u_lo, f"更逼近过期应更紧迫：{nearer} 应 > {u_lo}")
+
+    # 安全余量内的新鲜证据不该被拽来续验。
+    check(renew_urgency(statuses[0], by_name["c_safe"]) == 0.0, "余量内的新鲜证据不应入续验")
+
+    ok = not failures
+    if not quiet:
+        if ok:
+            print("✅ trustscore selfcheck：将过期识别只挑仍新鲜且逼近过期的、"
+                  "恰到提前线不打扰、越逼近越紧迫、同等逼近度按风险排——续验射程判得准。")
+        else:
+            print("❌ trustscore selfcheck 失败：")
+            for f in failures:
+                print(f"   · {f}")
+    return ok
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -339,12 +504,48 @@ def main(argv: list[str] | None = None) -> None:
                     help="只看当前复验队列(谁最该被重证)")
     ap.add_argument("--reverify", nargs="?", type=int, const=3, metavar="N",
                     help="照队列复跑最不可信的前 N 条(默认 3)，再重新打分")
+    ap.add_argument("--expiring", action="store_true",
+                    help="只看「将过期」清单(仍新鲜但时效快用尽，该提前续验)")
+    ap.add_argument("--renew", nargs="?", type=int, const=3, metavar="N",
+                    help="自动续验最将过期的前 N 条(默认 3)：提前复跑、把新证据写回账本")
+    ap.add_argument("--selfcheck", action="store_true",
+                    help="自检：将过期识别与续验排序的纯逻辑(不碰真账本)")
     ap.add_argument("--json", action="store_true", help="导出机读信任分清单")
     args = ap.parse_args(argv)
+
+    if args.selfcheck:
+        sys.exit(0 if selfcheck(quiet=args.quiet) else 1)
 
     if args.json:
         print(json.dumps(manifest(), ensure_ascii=False, indent=2))
         return
+
+    if args.expiring:
+        soon = expiring(evidence.status())
+        if not soon:
+            print("🎚️  没有将过期的能力——每条新鲜证据都还在安全余量内。")
+        else:
+            print(f"⏳ 将过期清单（{len(soon)} 条，按续验紧迫度排序）：\n")
+            for item in soon:
+                print(f"  {item['name']}（已用 {item['overdue']:.0%} 时效，"
+                      f"风险 {item['risk']:g}，紧迫度 {item['urgency']:.2f}）")
+            print("\n    跑 `python trustscore.py --renew` 提前续验最将过期的几条。")
+        return
+
+    if args.renew is not None:
+        rep = renew(args.renew)
+        if not args.quiet:
+            done = rep["renewed"]
+            print(f"⏳ 自动续验 {len(done)} 条将过期能力"
+                  f"（候选 {rep['candidates']} 条：{'、'.join(done) or '无将过期'}）")
+            for d in rep["deltas"]:
+                fb, fa = d["fresh_before"], d["fresh_after"]
+                arrow = (f"新鲜度 {fb:.2f} → {fa:.2f}"
+                         if fb is not None and fa is not None else "—")
+                print(f"  {d['name']}：{arrow}")
+            if rep["failed"]:
+                print(f"  🔴 续验复跑没通过：{'、'.join(rep['failed'])}（已落账，转入复验队列）")
+            print()
 
     if args.queue:
         queue = read_queue()
@@ -373,9 +574,10 @@ def main(argv: list[str] | None = None) -> None:
     trusts = assess()
     queue = build_queue(trusts)
     write_queue(queue)              # 每次扫描刷新队列快照
+    soon = expiring(evidence.status())
     all_trusted = all(t.trusted for t in trusts)
     if not (args.quiet and all_trusted):
-        _print_assessment(trusts, queue)
+        _print_assessment(trusts, queue, soon)
     sys.exit(0 if all_trusted else 1)
 
 
