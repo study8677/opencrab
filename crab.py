@@ -673,4 +673,13 @@ def _safe_tick() -> bool:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except BrokenPipeError:
+        try:
+            import os
+            import sys
+
+            sys.stdout = open(os.devnull, "w")
+        finally:
+            raise SystemExit(1)
