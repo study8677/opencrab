@@ -62,6 +62,10 @@ _load_env(REPO_ROOT / ".env")
 API_KEY = os.environ.get("OPENCRAB_API_KEY")
 BASE_URL = os.environ.get("OPENCRAB_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 MODEL = os.environ.get("OPENCRAB_MODEL", "gpt-5.4-mini")
+# 备用脑：主脑失效(key 失效 / 连不上)时自动切过去，主脑恢复又自动切回——大脑冗余，不靠人工救
+FALLBACK_API_KEY = os.environ.get("OPENCRAB_FALLBACK_API_KEY")
+FALLBACK_BASE_URL = os.environ.get("OPENCRAB_FALLBACK_BASE_URL", "").rstrip("/")
+FALLBACK_MODEL = os.environ.get("OPENCRAB_FALLBACK_MODEL", "")
 TICK_SECONDS = int(os.environ.get("OPENCRAB_TICK_SECONDS", "3600"))
 DAILY_ENERGY = int(os.environ.get("OPENCRAB_DAILY_ENERGY", "50000"))
 MOLT_EVERY = int(os.environ.get("OPENCRAB_MOLT_EVERY", "24"))   # 多少次心跳蜕一次壳
@@ -117,36 +121,60 @@ def _brain_failed(text: str) -> bool:
     return text.startswith(THINK_FAILED_PREFIX)
 
 
-def brain(system: str, prompt: str) -> tuple[str, int]:
-    """调用大脑，返回 (文本, 消耗的体力/token)。
-    无 key -> 梦境模式；出错 -> 降级，绝不让一次抖动弄死这只生命。
+def _call_one_brain(key: str, base: str, model: str,
+                    system: str, prompt: str) -> tuple[str, int]:
+    """调一个具体的大脑端点(成功返回 文本+token，失败抛异常)。
     刻意用干净 User-Agent，避开某些中转网关对 SDK 特征头的 WAF 拦截。"""
-    if not API_KEY:
-        return _dream(), 0
     body = json.dumps({
-        "model": MODEL,
+        "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": prompt}],
         "temperature": 0.8,
     }).encode("utf-8")
     req = urllib.request.Request(
-        f"{BASE_URL}/chat/completions", data=body, method="POST",
-        headers={"Authorization": f"Bearer {API_KEY}",
+        f"{base}/chat/completions", data=body, method="POST",
+        headers={"Authorization": f"Bearer {key}",
                  "Content-Type": "application/json",
                  "User-Agent": "opencrab/0.1"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        log(f"⚠️  大脑被拒({e.code})：{e.read()[:160]!r}")
-        return f"{THINK_FAILED_PREFIX}大脑返回 {e.code})", 0
-    except Exception as e:
-        log(f"⚠️  够不到大脑：{e}")
-        return f"{THINK_FAILED_PREFIX}暂时够不到大脑)", 0
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
     text = (data["choices"][0]["message"].get("content") or "").strip()
+    if not text:
+        raise ValueError("空回复")
     tokens = (data.get("usage") or {}).get("total_tokens") or max(1, len(text) // 3)
     return text, tokens
+
+
+def _brains() -> list[tuple[str, str, str, str]]:
+    """大脑清单：主脑在前、备脑在后。每次都从主脑试起——主脑活就用主脑，
+    主脑挂了才用备脑(所以主脑恢复后会自动切回)。"""
+    bs = []
+    if API_KEY:
+        bs.append(("主脑", API_KEY, BASE_URL, MODEL))
+    if FALLBACK_API_KEY:
+        bs.append(("备脑", FALLBACK_API_KEY, FALLBACK_BASE_URL, FALLBACK_MODEL))
+    return bs
+
+
+def brain(system: str, prompt: str) -> tuple[str, int]:
+    """调用大脑(主脑 → 备脑 自动故障转移)，返回 (文本, token)。
+    没有任何脑 -> 梦境模式；主脑挂了自动切备脑；所有脑都挂才降级——
+    绝不让一次抖动、甚至一个 key 失效，弄死这只生命。"""
+    brains = _brains()
+    if not brains:
+        return _dream(), 0
+    last = ""
+    for name, key, base, model in brains:
+        try:
+            return _call_one_brain(key, base, model, system, prompt)
+        except urllib.error.HTTPError as e:
+            last = f"{name}({model}) {e.code}"
+            log(f"⚠️  {name}({model})被拒({e.code})；换下一个脑…")
+        except Exception as e:
+            last = f"{name}({model}) {e}"
+            log(f"⚠️  够不到{name}({model})：{e}；换下一个脑…")
+    return f"{THINK_FAILED_PREFIX}所有脑都没应答：{last})", 0
 
 
 def _dream() -> str:
