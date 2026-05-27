@@ -213,6 +213,17 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="handsdojo",
+        # 自生手失败样本库:brain-only 改码「修不动」自动封成可复跑(replay)可训练(coach)的训练题。
+        # 同伤只封一次,招式库每长一招就能 --replay-all 看又填平了哪几道旧坑。复跑命令验证
+        # 封样指纹/去重、replay 判决(brain 真能修的伤判毕业)、coach 转换、summary 折叠都不崩——
+        # 真正的断奶靠把每次笨拙练成下次会,不靠硬撑。
+        asserts="brain 修不动的真伤能封成失败样本,可复跑看如今修没修通、可转成 coach 训练回合",
+        argv=_PY + ["handsdojo.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 
