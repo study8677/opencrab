@@ -17,6 +17,8 @@ git 始终攥在 opencrab 手里；爪子只拿到「改文件」的最小权限
 """
 from __future__ import annotations
 
+from weaning_gate import run_hands_default as _weaning_run_hands_default
+
 import datetime
 import pathlib
 import re
