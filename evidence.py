@@ -203,6 +203,16 @@ CLAIMS: list[Claim] = [
         ttl_days=7,
         risk=2.0,
     ),
+    Claim(
+        name="retirement_drill",
+        # 低热低信任退役演练:替每个退役候选真去证一遍替代路径(继任者在不在/门开不开/证据信不信),
+        # 证到位才给删/并/降级,证不出就留人、after 一律留空绝不现编。复跑命令验证替代闸四态分明、
+        # 删/并/降级/不许动判得清、「证不出绝不编 after 骗过 lifecycle 闸门」——代谢要靠证替代,不靠拍脑袋删。
+        asserts="退役候选必先证明替代路径活着(继任者在/门开/证据可信)才给删/并/降级,证不出则留人且 after 留空",
+        argv=_PY + ["retirement_drill.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
 ]
 
 
