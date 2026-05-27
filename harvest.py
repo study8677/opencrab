@@ -92,6 +92,9 @@ class Harvest:
     failing: bool = False       # 此刻证据账本是否 🔴失守
     evidence_state: str | None = None  # fresh / stale / broken / unproven / None(无声明)
     evidence_age: float | None = None  # 证据上次复验距今天数
+    beneficiary: str | None = None     # value.py 里登记的真实受益者
+    acceptance: list[str] = dataclasses.field(default_factory=list)  # value.py 里的验收样例
+    scenario: str | None = None        # value.py 里登记的真实使用场景
 
     verdict: str = PENDING
     reasons: list[str] = dataclasses.field(default_factory=list)
@@ -104,6 +107,9 @@ class Harvest:
             "evidence_state": self.evidence_state,
             "evidence_age": (round(self.evidence_age, 1)
                              if self.evidence_age is not None else None),
+            "beneficiary": self.beneficiary,
+            "acceptance": self.acceptance,
+            "scenario": self.scenario,
             "verdict": self.verdict, "reasons": self.reasons,
         }
 
@@ -154,6 +160,16 @@ def _evidence_index() -> dict[str, tuple[str | None, float | None]]:
         if name:
             out[name] = (st.get("state"), st.get("age_days"))
     return out
+
+
+def _value_index() -> dict[str, dict]:
+    """复用 value.manifest()，把真实受益者 / 验收样例 / 场景接到回访里；拿不到回空。"""
+    try:
+        import value
+        m = value.manifest()
+    except Exception:
+        return {}
+    return {c.get("name"): c for c in m.get("cards", []) if c.get("name")}
 
 
 # ── 判决：三维信号折叠成一个收成 ─────────────────────────────────────────────
@@ -213,6 +229,7 @@ def collect(lookback_days: int = DEFAULT_LOOKBACK, grep: str = "") -> list[Harve
     """对齐 git 合并日 ⨉ 使用痕迹 ⨉ 证据账本，产出每粒种的收成回查（按判决排序）。"""
     plantings = _plantings(lookback_days)
     evid = _evidence_index()
+    values = _value_index()
     today = _today()
 
     harvests: list[Harvest] = []
@@ -226,12 +243,16 @@ def collect(lookback_days: int = DEFAULT_LOOKBACK, grep: str = "") -> list[Harve
             continue
         age = max(0.0, age)
         ev_state, ev_age = evid.get(module, (None, None))
+        vc = values.get(module, {})
         h = Harvest(
             module=module, merged_at=merged_at, age_days=age,
             checkpoint=_checkpoint_for(age),
             uses_after=_uses_after(module, merged_at, lookback_days),
             failing=(ev_state == "broken"),
             evidence_state=ev_state, evidence_age=ev_age,
+            beneficiary=vc.get("beneficiary"),
+            acceptance=list(vc.get("acceptance") or []),
+            scenario=vc.get("scenario"),
         )
         _judge(h)
         harvests.append(h)
@@ -303,6 +324,10 @@ def _render(harvests: list[Harvest], lookback: int, due_only: bool) -> str:
         for h in items:
             cp = f"{h.checkpoint}天回查" if h.checkpoint else "未到点"
             L.append(f"   {h.module}.py — 合并 {h.merged_at[:10]}（{h.age_days:.1f} 天前 · {cp}）")
+            if h.beneficiary:
+                L.append(f"      受益者：{h.beneficiary}")
+            if h.acceptance:
+                L.append(f"      验收样例：{' '.join(h.acceptance[1:]) or h.acceptance[0]}")
             for why in h.reasons:
                 L.append(f"      · {why}")
         L.append("")
