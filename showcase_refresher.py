@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,6 +120,16 @@ def main():
     """命令行入口：运行一次刷新并打印结果。"""
     data = refresh_showcase()
     print(f"橱窗数据已刷新：{json.dumps(data, indent=2, ensure_ascii=False)}")
+    
+    # 同时更新 HTML 展示页
+    try:
+        # 导入并运行 showcase.py
+        showcase_path = Path(__file__).parent / "showcase.py"
+        if showcase_path.exists():
+            subprocess.run([sys.executable, str(showcase_path)], cwd=Path(__file__).parent, check=True)
+            print("HTML 展示页已同步更新")
+    except Exception as e:
+        print(f"警告：无法更新 HTML 展示页: {e}")
 
 
 if __name__ == "__main__":

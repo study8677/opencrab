@@ -39,6 +39,14 @@ class Showcase:
         except:
             stats['branch_count'] = 0
 
+        # 获取模块数
+        try:
+            py_files = [f for f in os.listdir(self.repo_path) 
+                       if f.endswith('.py') and not f.startswith('test_')]
+            stats['module_count'] = len(py_files)
+        except Exception:
+            stats['module_count'] = 0
+
         # 生成时间
         stats['generated_at'] = datetime.datetime.now().isoformat()
         return stats
@@ -61,6 +69,10 @@ class Showcase:
 <body>
     <div class="card">
         <h1>仓库状态卡</h1>
+        <div class="stat">
+            <span class="label">模块数量：</span>
+            <span class="value">{stats.get('module_count', 'N/A')}</span>
+        </div>
         <div class="stat">
             <span class="label">提交数量：</span>
             <span class="value">{stats.get('commit_count', 'N/A')}</span>

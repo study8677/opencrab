@@ -16,6 +16,8 @@ import inspect
 import json
 import os
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -233,21 +235,39 @@ def _call_entrypoint(func: Any) -> None:
 
 
 def run_showcase_refresh_gate() -> Optional[str]:
+    """运行展示刷新网关，优先使用已存在的 showcase_refresh_gate 模块。"""
+    # 先尝试导入 showcase_refresh_gate
     try:
         module = importlib.import_module("showcase_refresh_gate")
-    except Exception as exc:  # pragma: no cover - defensive integration seam
-        return f"import failed: {exc}"
-
-    for name in ("main", "run", "check", "showcase_refresh_gate"):
-        func = getattr(module, name, None)
-        if callable(func):
-            try:
-                _call_entrypoint(func)
-            except Exception as exc:  # pragma: no cover - defensive integration seam
-                return f"{name} failed: {exc}"
-            return None
-
-    return "no callable entrypoint found"
+        # 找可调用的入口点
+        for name in ("main", "run", "check", "showcase_refresh_gate"):
+            func = getattr(module, name, None)
+            if callable(func):
+                try:
+                    _call_entrypoint(func)
+                except Exception as exc:
+                    return f"{name} failed: {exc}"
+                return None
+        return "no callable entrypoint in showcase_refresh_gate"
+    except ImportError:
+        pass  # 没有 showcase_refresh_gate，直接执行刷新
+    
+    # 直接执行刷新命令
+    import subprocess
+    import sys
+    root = Path(__file__).parent
+    
+    # 运行 showcase_refresher.py 更新 JSON
+    refresher = root / "showcase_refresher.py"
+    if refresher.exists():
+        subprocess.run([sys.executable, str(refresher)], cwd=root, check=True)
+    
+    # 运行 showcase.py 更新 HTML
+    showcase = root / "showcase.py"
+    if showcase.exists():
+        subprocess.run([sys.executable, str(showcase)], cwd=root, check=True)
+    
+    return None  # 成功
 
 
 def check_docs_index(
@@ -274,6 +294,15 @@ def check_docs_index(
         if run_refresh_gate:
             refresh_ran = True
             refresh_error = run_showcase_refresh_gate()
+            # 刷新后重新检查是否仍然过期
+            if refresh_error is None:
+                # 重新读取 index.html 的统计值
+                documented_after = documented_counts(index)
+                reasons_after = _staleness_reasons(documented_after, current, index, max_age_days)
+                if not reasons_after:
+                    # 刷新成功，清除过期状态
+                    stale = False
+                    reasons.clear()
 
     return FreshnessResult(
         stale=stale,
