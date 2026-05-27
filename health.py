@@ -702,6 +702,27 @@ def _run_contracts(strict: bool) -> Layer:
     return Layer("contracts", "📜 模块契约", healthy, summary, detail)
 
 
+def _run_weaning(strict: bool) -> Layer:
+    """无 claude 生存闸：拉 brain 上场跑一场 brain-only 自改实战，
+    缺任何 LLM 外援也必须满分通过——把「能断奶」从自称钉成每日硬闸。
+
+    weaning_trial 全程不导入 crab.brain、不读 API_KEY、不雇任何爪子，
+    只凭「读报错→挑招式→改一处→自测/回滚」这套纯逻辑修真伤。所以无论本机
+    有没有接上 claude，这一层的结论都只取决于 brain 自己的独立修复能力。
+    门禁 = 真修好的题数必须打满（PASS_THRESHOLD，不留及格线余地）。"""
+    import weaning_trial as cap_weaning
+    bouts = cap_weaning.run()
+    rate = cap_weaning.pass_rate(bouts)
+    won = sum(1 for b in bouts if b.won)
+    healthy = rate >= cap_weaning.PASS_THRESHOLD
+    summary = (f"{won}/{len(bouts)} 道真修全过，brain 无外援也能自立"
+               if healthy
+               else f"仅 {won}/{len(bouts)} 道真修（需 ≥{cap_weaning.PASS_THRESHOLD:.0%}），断奶未达标")
+    detail = "\n".join(
+        f"  {'✅' if b.won else '❌'} {b.name} — {b.detail}" for b in bouts)
+    return Layer("weaning", "🍼 无 claude 生存闸", healthy, summary, detail)
+
+
 def _finding_line(f) -> str:
     """把 probe/envcheck 的 Finding 渲染成一行(含修复建议)。"""
     line = f"  {_MARK[f.level]} {f.label}" + (f" — {f.detail}" if f.detail else "")
@@ -717,9 +738,11 @@ LAYERS = {
     "checkup": _run_checkup,
     "contracts": _run_contracts,
     "smoke": _run_smoke,
+    "weaning": _run_weaning,
 }
-# 由底向上：跑得起来(probe) → 配置对(env) → 结构健(checkup) → 边界守约(contracts) → 文档真(smoke)。
-ORDER = ["probe", "env", "checkup", "contracts", "smoke"]
+# 由底向上：跑得起来(probe) → 配置对(env) → 结构健(checkup) → 边界守约(contracts)
+#   → 文档真(smoke) → 没外援也能自修(weaning，断奶生存闸，置于顶端作能力终判)。
+ORDER = ["probe", "env", "checkup", "contracts", "smoke", "weaning"]
 
 
 def run(keys: list[str] | None = None, *, strict: bool = False) -> list[Layer]:
