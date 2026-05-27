@@ -47,6 +47,7 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 CHECK_TIMEOUT = 120          # 单条验收/反指标命令的墙钟上限(秒)：核价值不该把生命拖死
+HARVEST_CHECKPOINTS = (3, 7, 14)  # 每次自改价值兑现后的真实使用回访点（天）
 _PY = [sys.executable]
 
 
@@ -70,7 +71,12 @@ class ValueCard:
         return {"name": self.name, "scenario": self.scenario,
                 "beneficiary": self.beneficiary, "acceptance": self.acceptance,
                 "counter": self.counter, "counter_why": self.counter_why,
-                "user_journey": self.user_journey}
+                "user_journey": self.user_journey,
+                "harvest_followup": {
+                    "days": list(HARVEST_CHECKPOINTS),
+                    "command": _PY + ["harvest.py", "--grep", self.name],
+                    "why": "验收只证明今天能跑；3/7/14 天回访证明它后来仍被真实使用",
+                }}
 
 
 # ── 价值卡清单：单一真相源 ────────────────────────────────────────────
