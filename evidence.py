@@ -235,6 +235,17 @@ CLAIMS: list[Claim] = [
         risk=2.0,
     ),
     Claim(
+        name="hands_immunity_drill",
+        # 自生手免疫演练:成筐把畸形/越界/语法坏的「坏手」补丁砸向真试衣间 fit() 管子,逐类断言
+        # ①砸不进去(拒在预期闸) ②砸完真文件 sha256 一字不差(回滚干净)。越界腿外加一发 `../` 路径越界,
+        # 走真 --fit CLI 断言被拒(退出码 2)、仓外无新文件。复跑命令验证三类坏手各被挡在该挡的闸上、
+        # 每发砸完真文件分毫不动——手会犯错,先练会不伤身再谈会改对。
+        asserts="畸形/越界(含 ../ 路径)/语法坏的坏手补丁砸向试衣间都被拒在预期闸,且每发砸完真文件字节不变",
+        argv=_PY + ["hands_immunity_drill.py", "--selfcheck", "--quiet"],
+        ttl_days=7,
+        risk=2.0,
+    ),
+    Claim(
         name="handsdojo",
         # 自生手失败样本库:brain-only 改码「修不动」自动封成可复跑(replay)可训练(coach)的训练题。
         # 同伤只封一次,招式库每长一招就能 --replay-all 看又填平了哪几道旧坑。复跑命令验证
