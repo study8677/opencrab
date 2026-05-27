@@ -39,8 +39,12 @@ import ast
 import json
 import pathlib
 import sys
+import time
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
+
+# 证据过期阈值（天数）：超过这个时间的证据就算存在也视为"过期"，不再算硬验证
+_PROOF_EXPIRY_DAYS = 30  # 30天内的证据才算有效
 
 # 验证证据的五个来源(显示名 → 实际文件)。顺序即渲染顺序。
 _PROOF_LABELS = {
@@ -53,6 +57,9 @@ _PROOF_LABELS = {
 # 「真跑过、守着输出」的硬证据：回归/烟雾是预置样本守着，亲验是「我刚亲手改过且
 # 改完自测真跑通」的最新鲜实证——三者都算「有东西真验过它」；文档/能力只是「露过面」。
 _HARD_PROOF = ("回归", "烟雾", "亲验")
+
+# 用于显示过期证据的前缀
+_EXPIRY_PREFIX = "过期"
 
 
 # ── 读领地：模块清单 + 各自的本事 ──────────────────────────────────
@@ -111,6 +118,14 @@ def _read(path: pathlib.Path) -> str:
     except Exception:
         return ""
 
+def _is_recent(path: pathlib.Path) -> bool:
+    """文件最后修改时间是否在有效期内（30天内）。"""
+    try:
+        mtime = path.stat().st_mtime
+        return (time.time() - mtime) < _PROOF_EXPIRY_DAYS * 24 * 3600
+    except (OSError, ValueError):
+        return False
+
 
 def _proven_modules() -> dict[str, dict]:
     """最近被亲手改过且自测跑通的模块(来自 handsfeedback 回灌)。
@@ -132,13 +147,22 @@ def _proof(stem: str, proven: dict[str, dict] | None = None) -> dict[str, str]:
 
     # 回归：只认 regression.CASES / SAMPLES 这两份用例清单里点名的命令
     reg_cases = _literal_strings(REPO_ROOT / "regression.py", ("CASES", "SAMPLES"))
+    reg_file = REPO_ROOT / "regression.py"
     if needle in reg_cases:
-        found["回归"] = "regression.py 的回归用例点名了它"
+        if _is_recent(reg_file):
+            found["回归"] = "regression.py 的回归用例点名了它（有效期内）"
+        else:
+            # 证据存在但过期，不计入硬验证，但记录在案
+            found["过期回归"] = f"regression.py 的回归用例点名了它（但超过{_PROOF_EXPIRY_DAYS}天未更新）"
 
     # 烟雾：smoke.py 的 SAMPLES 用例清单
     smoke_cases = _literal_strings(REPO_ROOT / "smoke.py", ("SAMPLES",))
+    smoke_file = REPO_ROOT / "smoke.py"
     if needle in smoke_cases:
-        found["烟雾"] = "smoke.py 的烟雾用例点名了它"
+        if _is_recent(smoke_file):
+            found["烟雾"] = "smoke.py 的烟雾用例点名了它（有效期内）"
+        else:
+            found["过期烟雾"] = f"smoke.py 的烟雾用例点名了它（但超过{_PROOF_EXPIRY_DAYS}天未更新）"
 
     # 文档：README 命令块(整文件 substring 足够——README 里出现即视为露过面)
     if needle in _read(REPO_ROOT / "README.md"):
@@ -151,8 +175,16 @@ def _proof(stem: str, proven: dict[str, dict] | None = None) -> dict[str, str]:
     # 亲验：最近被亲手改过、且那次改动自测真跑通(最新鲜的实证)
     proven = _proven_modules() if proven is None else proven
     if stem in proven:
-        hand = proven[stem].get("hand", "?")
-        found["亲验"] = f"{hand} 刚亲手改过它且改完自测跑通"
+        # 检查亲验的时间戳是否在有效期内
+        ts = proven[stem].get("timestamp")
+        if ts and (time.time() - ts) < _PROOF_EXPIRY_DAYS * 24 * 3600:
+            hand = proven[stem].get("hand", "?")
+            found["亲验"] = f"{hand} 刚亲手改过它且改完自测跑通（有效期内）"
+        elif ts:
+            found["过期亲验"] = f"曾经被改过但超过{_PROOF_EXPIRY_DAYS}天未更新"
+        else:
+            # 没有时间戳的亲验，视为历史记录但不计入硬验证
+            found["历史亲验"] = "曾经被改过但无法验证时效性"
 
     return found
 
@@ -164,7 +196,12 @@ def _gaps_for(skill: str | None, proof: dict[str, str]) -> list[str]:
         gaps.append("无本事描述：连 docstring 首行都没有，它会做什么全靠猜")
     has_hard = any(k in proof for k in _HARD_PROOF)
     if skill is not None and not has_hard:
-        gaps.append("有本事·没验证：会做事却无回归/烟雾守着，它悄悄漂了都不会知道")
+        # 检查是否有过期证据
+        has_expired = any(k.startswith("过期") for k in proof)
+        if has_expired:
+            gaps.append("有本事·证据过期：曾经有验证但超过30天未更新，需要重新验证")
+        else:
+            gaps.append("有本事·没验证：会做事却无回归/烟雾守着，它悄悄漂了都不会知道")
     if "文档" not in proof:
         gaps.append("没露面：README 里查不到它，外人(和未来的我)很难发现它")
     return gaps
@@ -190,6 +227,7 @@ def build(module: str | None = None) -> dict:
         "modules": len(nodes),
         "nodes": nodes,
         "summary": _summary(nodes),
+        "proof_expiry_days": _PROOF_EXPIRY_DAYS,
     }
 
 
@@ -213,10 +251,16 @@ def gaps() -> list[dict]:
     out: list[dict] = []
     for n in build()["nodes"]:
         if n["skill"] and not any(k in n["proof"] for k in _HARD_PROOF):
+            # 检查是否有过期证据，给出更精确的指导
+            has_expired = any(k.startswith("过期") for k in n["proof"])
+            if has_expired:
+                reason = "有本事但证据过期——需要重新运行验证并更新证据"
+            else:
+                reason = "有本事却没有回归/烟雾守着——补一组样本，锁住它的输出"
             out.append({
                 "module": n["module"],
                 "skill": n["skill"],
-                "reason": "有本事却没有回归/烟雾守着——补一组样本，锁住它的输出",
+                "reason": reason,
             })
     return out
 
@@ -224,11 +268,13 @@ def gaps() -> list[dict]:
 # ── 渲染 ───────────────────────────────────────────────────────────
 def render(g: dict, only_gaps: bool = False) -> str:
     s = g["summary"]
+    expiry_days = g.get("proof_expiry_days", 30)
     L = ["🦀🕸️ 能力图谱 · 我会什么 / 缺什么",
          f"   自省 {g['modules']} 个模块 ｜ "
          f"有本事没验证 {len(s['unverified'])} ｜ "
          f"没露面 {len(s['undocumented'])} ｜ "
-         f"没本事描述 {len(s['nameless'])}"]
+         f"没本事描述 {len(s['nameless'])}",
+         f"   📅 证据有效期：{expiry_days}天内的证据才算有效验证"]
 
     if only_gaps:
         gg = gaps()
@@ -264,6 +310,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--module", metavar="STEM",
                     help="只看某个模块(传 stem，如 compass)")
     ap.add_argument("--json", action="store_true", help="机读：导成 JSON")
+    ap.add_argument("--expiry-days", type=int, default=30,
+                    help="证据过期天数阈值（默认30天）")
     args = ap.parse_args(argv)
 
     g = build(module=args.module)
