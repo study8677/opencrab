@@ -154,8 +154,24 @@ def lane_goldens(n: int = CANARY_GOLDENS, use_brain: bool = False) -> Lane:
 
 
 # ── 旅程赛道：最热的用户旅程里有没有当场在烧的 ────────────────────────────
+def _cooling_journey_notes(m: dict) -> tuple[str, ...]:
+    """最常用但证据已过期/未证(还没失守)的热旅程——不按住放量，只提醒先复证别等它烧起来。"""
+    notes = []
+    for j in m.get("journeys", []):
+        # 失守(broken)已进 hot 名单、会触发按住，这里只挑「常用且证据将凉」的过期/未证。
+        if j.get("has_claim") and j.get("verify_state") in ("stale", "unproven"):
+            word = "过期" if j["verify_state"] == "stale" else "未证"
+            notes.append(f"热旅程 {j['name']}.py（近窗口被点名 {j.get('mentions', 0)} 次）"
+                         f"证据{word}，建议先 `python evidence.py --verify {j['name']}` 复证。")
+    return tuple(notes)
+
+
 def lane_journeys() -> Lane:
-    """旅程赛道：usageheat 里当场发烫(入口推不开/证据失守)的器官即金丝雀报警。"""
+    """旅程赛道：usageheat 里当场发烫(入口推不开/证据失守)的器官即金丝雀报警。
+
+    此外把「最常用但证据将凉」(过期/未证)的热旅程挂为提醒——不按住放量，
+    但先于失守提示去复证：强弱应先盯真实常用处。
+    """
     key, icon, name = "journeys", "🔥", "旅程赛道"
     try:
         import usageheat
@@ -163,6 +179,7 @@ def lane_journeys() -> Lane:
     except Exception as e:  # noqa: BLE001
         return _unavailable(key, icon, name, e)
 
+    notes = _cooling_journey_notes(m)
     hot = list(m.get("hot", []))
     if hot:
         shown = "、".join(f"{h}.py" for h in hot[:5])
@@ -170,9 +187,11 @@ def lane_journeys() -> Lane:
         return Lane(key, icon, name, VERDICT_HOLD,
                     f"最热旅程里有 {len(hot)} 个器官当场在烧：{shown}{more}。",
                     alarms=(f"先修好发烫器官（{shown}{more}）再放量，"
-                            "别拿正在失败的表面去铺开。",))
+                            "别拿正在失败的表面去铺开。",),
+                    notes=notes)
     return Lane(key, icon, name, VERDICT_RAMP,
-                f"最热旅程无当场失败（共扫 {m.get('total', 0)} 个器官，0 发烫）。")
+                f"最热旅程无当场失败（共扫 {m.get('total', 0)} 个器官，0 发烫）。",
+                notes=notes)
 
 
 # ── 总决：两条赛道合成「放量 / 按住」 ─────────────────────────────────────
