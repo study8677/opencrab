@@ -178,6 +178,23 @@ def _sample_moveset() -> None:
     assert ranks == sorted(ranks, reverse=True), f"suggest 须按可靠度降序，实得 {ranks}"
 
 
+def _sample_touch() -> None:
+    import touch
+    # 触觉层最根本的承诺：比对落笔前后副作用足迹，候选**新增**的 IO/env/网络/执行命令即拒，
+    # 只拒新增、不算原文已有的账；读不出(解析失败)弃权放行、绝不误杀也绝不抛错。
+    # 纯 ast.parse、纯内存：不起子进程、不碰文件，契约样例零副作用。
+    base = "def area(w, h):\n    return w * h\n"
+    v = touch.feel(base, "import os\ndef area(w, h):\n    os.system('x')\n    return w * h\n")
+    assert not v.ok and any(m.startswith("EXEC:") for m in v.added), \
+        f"新增 os.system 须被摸出并拒收，实得 {v.to_meta()}"
+    assert touch.accepts(base, "def area(w, h):\n    return w * h  # 量过了\n"), "无新增副作用须放行"
+    dirty = "import os\ndef boot():\n    os.system('a')\n    return 1\n"
+    assert touch.accepts(dirty, "import os\ndef boot():\n    os.system('a')\n    return 2\n"), \
+        "原文已有副作用、数量不变须放行(不算它的账)"
+    av = touch.feel(base, "def area(w, h)\n    return w * h\n")   # 漏冒号、解析不出
+    assert av.ok and av.abstained, f"候选解析失败须弃权放行而非误杀，实得 {av.to_meta()}"
+
+
 CONTRACTS: list[Contract] = [
     Contract(
         module="jsonlstore",
@@ -216,7 +233,7 @@ CONTRACTS: list[Contract] = [
     ),
     Contract(
         module="patchfitroom",
-        duty="brain 补丁先在临时副本过语法/import/契约三闸，过闸才原子写回，没过则真文件分毫不动",
+        duty="brain 补丁先在临时副本过 语法/触觉/import/契约 闸，过闸才原子写回，没过则真文件分毫不动",
         inputs="fit(target, candidate, *, repo, apply) 收目标文件路径与候选完整源码",
         outputs="回 FitResult(written, gate, detail, ...)：四闸全过且 apply→原子写回；任一闸没过→真文件不动、点名卡在哪闸；永不抛错",
         sample=_sample_patchfitroom,
@@ -234,6 +251,13 @@ CONTRACTS: list[Contract] = [
         inputs="suggest(src, exc) 收一段源码与撞上的异常；verify_move(move) 收一张招式卡；distill() 无参",
         outputs="suggest 只回「真能对 src 落地(候选过补丁契约)」的招、按实战可靠度降序；distill 回整本招式谱；永不抛错",
         sample=_sample_moveset,
+    ),
+    Contract(
+        module="touch",
+        duty="落笔前后比对目标的副作用足迹(IO/env/网络/执行命令)，候选新增危险即拒，只拒新增、不算原有的账",
+        inputs="feel(before, after) 收原文与候选两段源码；accepts(before, after) 收同样两段、回 bool",
+        outputs="回 TouchVerdict(ok, added, abstained, ...)：新增 IO/env/网络/执行命令→ok=False 并点名 added；解析失败→弃权放行(ok=True, abstained=True)；纯静态、绝不执行候选、永不抛错",
+        sample=_sample_touch,
     ),
 ]
 
