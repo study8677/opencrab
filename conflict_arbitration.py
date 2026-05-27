@@ -1,531 +1,437 @@
-import os
-import json
-import time
-from typing import Dict, Any, Optional, List, Tuple
+"""Deterministic arbitration for conflicting evidence.
+
+The module keeps the conflict rule small and replayable:
+
+* evidence is normalized from dicts, dataclasses, or plain objects;
+* each item receives a confidence and a trust score;
+* trust can be supplied directly or obtained from ``trustscore`` when present;
+* one attractive metric is not allowed to dominate corroborated evidence;
+* every decision carries a replay payload that can be fed back to ``replay``.
+
+The implementation is intentionally dependency-light.  ``evidence`` and
+``trustscore`` are optional integrations: objects from those modules work as
+plain Python objects, and trustscore hooks are discovered defensively.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field, is_dataclass
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+
+_POSITIVE = {"support", "supports", "for", "pro", "pass", "passed", "true", True, 1}
+_NEGATIVE = {"oppose", "opposes", "against", "con", "fail", "failed", "false", False, -1}
+_TRUST_HOOKS = (
+    "score_evidence",
+    "trust_score",
+    "score",
+    "compute_trust",
+    "evaluate",
+)
+
+
+def _clamp(value: Any, default: float = 0.5) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    if number < 0.0:
+        return 0.0
+    if number > 1.0:
+        return 1.0
+    return number
+
+
+def _plain(item: Any) -> Dict[str, Any]:
+    if item is None:
+        return {}
+    if isinstance(item, Mapping):
+        return dict(item)
+    if is_dataclass(item):
+        return asdict(item)
+    data: Dict[str, Any] = {}
+    for name in (
+        "id",
+        "claim",
+        "stance",
+        "direction",
+        "verdict",
+        "confidence",
+        "score",
+        "trust",
+        "trust_score",
+        "source",
+        "metric",
+        "metrics",
+        "freshness",
+        "payload",
+    ):
+        if hasattr(item, name):
+            data[name] = getattr(item, name)
+    if not data and hasattr(item, "__dict__"):
+        data.update(vars(item))
+    return data
+
+
+def _call_trustscore(item: Any, data: Mapping[str, Any]) -> Optional[float]:
+    """Best-effort integration with trustscore without depending on its API."""
+
+    try:
+        import trustscore  # type: ignore
+    except Exception:
+        return None
+
+    for hook_name in _TRUST_HOOKS:
+        hook = getattr(trustscore, hook_name, None)
+        if not callable(hook):
+            continue
+        for arg in (item, data):
+            try:
+                scored = hook(arg)
+            except TypeError:
+                continue
+            except Exception:
+                break
+            if isinstance(scored, Mapping):
+                for key in ("trust", "trust_score", "score", "confidence"):
+                    if key in scored:
+                        return _clamp(scored[key])
+            if hasattr(scored, "trust_score"):
+                return _clamp(getattr(scored, "trust_score"))
+            if hasattr(scored, "trust"):
+                return _clamp(getattr(scored, "trust"))
+            if isinstance(scored, (int, float)):
+                return _clamp(scored)
+    return None
+
+
+def _stance_value(raw: Any) -> int:
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in _POSITIVE:
+            return 1
+        if lowered in _NEGATIVE:
+            return -1
+    if raw in _POSITIVE:
+        return 1
+    if raw in _NEGATIVE:
+        return -1
+    return 0
+
+
+@dataclass(frozen=True)
+class NormalizedEvidence:
+    """Evidence shape used by the arbitrator."""
+
+    id: str
+    claim: str
+    stance: int
+    confidence: float
+    trust: float
+    source: str = "unknown"
+    metric: Optional[str] = None
+    payload: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def weight(self) -> float:
+        return _clamp(self.confidence * self.trust)
+
+
+@dataclass(frozen=True)
+class ArbitrationDecision:
+    """Replayable decision for one conflict set."""
+
+    verdict: str
+    confidence: float
+    rule: str
+    winner: Optional[str]
+    reasons: Tuple[str, ...]
+    replay: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "verdict": self.verdict,
+            "confidence": self.confidence,
+            "rule": self.rule,
+            "winner": self.winner,
+            "reasons": list(self.reasons),
+            "replay": self.replay,
+        }
+
+
+def normalize_evidence(item: Any, index: int = 0) -> NormalizedEvidence:
+    """Normalize dict/object/dataclass evidence into an arbitration record."""
+
+    data = _plain(item)
+    explicit_trust = data.get("trust_score", data.get("trust"))
+    trust = _clamp(explicit_trust, default=-1.0)
+    if trust < 0.0:
+        scored = _call_trustscore(item, data)
+        trust = _clamp(scored, default=0.5) if scored is not None else 0.5
+
+    confidence = _clamp(
+        data.get("confidence", data.get("score", data.get("probability", 0.5)))
+    )
+    stance = _stance_value(
+        data.get("stance", data.get("direction", data.get("verdict", data.get("supports"))))
+    )
+    claim = str(data.get("claim", data.get("subject", "default")))
+    source = str(data.get("source", data.get("origin", "unknown")))
+    metric = data.get("metric")
+    if metric is None and isinstance(data.get("metrics"), Mapping):
+        metric = ",".join(sorted(str(key) for key in data["metrics"].keys()))
+
+    evidence_id = str(data.get("id", data.get("name", f"e{index}")))
+    payload = dict(data)
+    return NormalizedEvidence(
+        id=evidence_id,
+        claim=claim,
+        stance=stance,
+        confidence=confidence,
+        trust=trust,
+        source=source,
+        metric=str(metric) if metric is not None else None,
+        payload=payload,
+    )
+
+
+def _cap_single_dominance(items: Sequence[NormalizedEvidence]) -> Dict[str, float]:
+    """Score items while limiting the effect of one lone beautiful metric."""
+
+    raw = {item.id: item.weight for item in items}
+    if len(items) < 2:
+        return raw
+
+    total = sum(raw.values())
+    if total <= 0.0:
+        return raw
+
+    cap = max(0.55, 1.0 / len(items) + 0.25) * total
+    capped: Dict[str, float] = {}
+    for item in items:
+        capped[item.id] = min(raw[item.id], cap)
+    return capped
+
+
+def arbitrate(
+    evidences: Iterable[Any],
+    *,
+    min_margin: float = 0.12,
+    min_corroboration: int = 2,
+) -> ArbitrationDecision:
+    """Choose a stable verdict from conflicting evidence.
+
+    Verdicts:
+    * ``support``: positive evidence wins with enough weighted margin;
+    * ``oppose``: negative evidence wins with enough weighted margin;
+    * ``mixed``: both sides are close or only a single side lacks corroboration;
+    * ``insufficient``: no directional evidence is available.
+    """
+
+    normalized = [normalize_evidence(item, idx) for idx, item in enumerate(evidences)]
+    directional = [item for item in normalized if item.stance != 0]
+    if not directional:
+        replay_payload = _replay_payload(normalized, {}, 0.0, 0.0, min_margin, min_corroboration)
+        return ArbitrationDecision(
+            verdict="insufficient",
+            confidence=0.0,
+            rule="weighted_trust_with_single_metric_cap",
+            winner=None,
+            reasons=("no directional evidence",),
+            replay=replay_payload,
+        )
+
+    capped = _cap_single_dominance(directional)
+    support = sum(capped[item.id] for item in directional if item.stance > 0)
+    oppose = sum(capped[item.id] for item in directional if item.stance < 0)
+    total = support + oppose
+    margin = abs(support - oppose) / total if total else 0.0
+    support_count = sum(1 for item in directional if item.stance > 0 and capped[item.id] > 0)
+    oppose_count = sum(1 for item in directional if item.stance < 0 and capped[item.id] > 0)
+
+    reasons: List[str] = [
+        f"support_weight={support:.3f}",
+        f"oppose_weight={oppose:.3f}",
+        f"margin={margin:.3f}",
+    ]
+
+    winner: Optional[str]
+    if support > oppose:
+        proposed = "support"
+        winner = _best_id(directional, capped, 1)
+        winning_count = support_count
+    elif oppose > support:
+        proposed = "oppose"
+        winner = _best_id(directional, capped, -1)
+        winning_count = oppose_count
+    else:
+        proposed = "mixed"
+        winner = None
+        winning_count = 0
+
+    if proposed == "mixed" or margin < min_margin:
+        verdict = "mixed"
+        winner = None
+        reasons.append("margin below replayable conflict threshold")
+    elif winning_count < min_corroboration and len(directional) > 1:
+        verdict = "mixed"
+        reasons.append("single evidence item was not allowed to dominate")
+    else:
+        verdict = proposed
+        reasons.append(f"{proposed} side wins after trustscore weighting")
+
+    confidence = _clamp(0.5 + margin / 2.0 if verdict != "mixed" else 0.5 - margin / 4.0)
+    replay_payload = _replay_payload(
+        normalized, capped, support, oppose, min_margin, min_corroboration
+    )
+    return ArbitrationDecision(
+        verdict=verdict,
+        confidence=confidence,
+        rule="weighted_trust_with_single_metric_cap",
+        winner=winner,
+        reasons=tuple(reasons),
+        replay=replay_payload,
+    )
+
+
+def _best_id(items: Sequence[NormalizedEvidence], weights: Mapping[str, float], stance: int) -> Optional[str]:
+    side = [item for item in items if item.stance == stance]
+    if not side:
+        return None
+    return max(side, key=lambda item: (weights.get(item.id, 0.0), item.trust, item.confidence, item.id)).id
+
+
+def _replay_payload(
+    items: Sequence[NormalizedEvidence],
+    capped: Mapping[str, float],
+    support: float,
+    oppose: float,
+    min_margin: float,
+    min_corroboration: int,
+) -> Dict[str, Any]:
+    return {
+        "inputs": [
+            {
+                "id": item.id,
+                "claim": item.claim,
+                "stance": item.stance,
+                "confidence": item.confidence,
+                "trust": item.trust,
+                "source": item.source,
+                "metric": item.metric,
+                "weight": item.weight,
+                "capped_weight": capped.get(item.id, item.weight),
+            }
+            for item in items
+        ],
+        "totals": {"support": support, "oppose": oppose},
+        "params": {
+            "min_margin": min_margin,
+            "min_corroboration": min_corroboration,
+        },
+    }
+
+
+def replay(decision_or_payload: Any) -> ArbitrationDecision:
+    """Replay an arbitration decision from its recorded payload."""
+
+    if isinstance(decision_or_payload, ArbitrationDecision):
+        payload = decision_or_payload.replay
+    elif isinstance(decision_or_payload, Mapping) and "replay" in decision_or_payload:
+        payload = decision_or_payload["replay"]
+    else:
+        payload = decision_or_payload
+
+    inputs = list(payload.get("inputs", []))
+    params = dict(payload.get("params", {}))
+    return arbitrate(
+        inputs,
+        min_margin=float(params.get("min_margin", 0.12)),
+        min_corroboration=int(params.get("min_corroboration", 2)),
+    )
+
+
+def replay_decision(decision_or_payload: Any) -> ArbitrationDecision:
+    return replay(decision_or_payload)
+
+
+def arbitrate_conflict(evidences: Iterable[Any], **kwargs: Any) -> ArbitrationDecision:
+    return arbitrate(evidences, **kwargs)
+
+
+def decide(evidences: Iterable[Any], **kwargs: Any) -> ArbitrationDecision:
+    return arbitrate(evidences, **kwargs)
 
 
 class ConflictArbitrator:
-    """Conflict arbitration helpers.
+    """Small OO wrapper for callers that prefer a reusable arbitrator."""
 
-    The original source-vs-source conflict checks are kept for compatibility.
-    The plan arbitration contract added here is intentionally small:
-    - input: a list of strategy plans (dicts)
-    - conflict key: action target/path/file/name/id
-    - conflict: same target with different operation/value signatures
-    - winner: highest value, then lower risk, fresher evidence, score, input order, stable plan id
-    - outcome: adopt, defer, or verify from evidence strength/freshness/risk and close-call margins
-    - output: JSON-serialisable audit dict
-    """
+    def __init__(self, min_margin: float = 0.12, min_corroboration: int = 2) -> None:
+        self.min_margin = min_margin
+        self.min_corroboration = min_corroboration
 
-    ARBITRATION_SCHEMA_VERSION = "conflict-arbitration.v1"
-
-    def __init__(self, evidence_path: str = 'evidence.py', replay_path: str = 'replay.py', readme_path: str = 'README.md'):
-        self.evidence_path = evidence_path
-        self.replay_path = replay_path
-        self.readme_path = readme_path
-        self.evidence_data = None
-        self.replay_data = None
-        self.readme_content = None
-
-    def load_data(self):
-        """加载证据账本、回放结果和README内容。"""
-        # 尝试导入 evidence 模块获取数据
-        try:
-            import evidence
-            if hasattr(evidence, 'get_ledger'):
-                self.evidence_data = evidence.get_ledger()
-            else:
-                self.evidence_data = getattr(evidence, 'LEDGER', {})
-        except ImportError:
-            self.evidence_data = {}
-
-        # 尝试导入 replay 模块获取数据
-        try:
-            import replay
-            if hasattr(replay, 'get_results'):
-                self.replay_data = replay.get_results()
-            else:
-                self.replay_data = getattr(replay, 'RESULTS', {})
-        except ImportError:
-            self.replay_data = {}
-
-        # 读取 README 文件
-        if os.path.exists(self.readme_path):
-            with open(self.readme_path, 'r', encoding='utf-8') as f:
-                self.readme_content = f.read()
-        else:
-            self.readme_content = ''
-
-    def extract_evidence_claims(self) -> Dict[str, Any]:
-        """从证据账本提取声明（键值对）。"""
-        return self.evidence_data or {}
-
-    def extract_replay_claims(self) -> Dict[str, Any]:
-        """从回放结果提取声明（键值对）。"""
-        return self.replay_data or {}
-
-    def extract_readme_claims(self) -> Dict[str, Any]:
-        """从 README 提取声明（简单键值对解析）。"""
-        claims = {}
-        if self.readme_content:
-            lines = self.readme_content.split('\n')
-            for line in lines:
-                if ':' in line:
-                    key, value = line.split(':', 1)
-                    claims[key.strip()] = value.strip()
-        return claims
-
-    def check_conflicts(self) -> Dict[str, Any]:
-        """检查三个数据源之间的冲突。返回冲突详情字典。"""
-        evidence_claims = self.extract_evidence_claims()
-        replay_claims = self.extract_replay_claims()
-        readme_claims = self.extract_readme_claims()
-
-        conflicts = {}
-        # 比较证据与回放
-        for key in set(evidence_claims.keys()) & set(replay_claims.keys()):
-            if evidence_claims[key] != replay_claims[key]:
-                conflicts[key] = {
-                    'evidence': evidence_claims[key],
-                    'replay': replay_claims[key],
-                    'readme': readme_claims.get(key, 'N/A')
-                }
-        # 比较证据与 README
-        for key in set(evidence_claims.keys()) & set(readme_claims.keys()):
-            if evidence_claims[key] != readme_claims[key]:
-                if key not in conflicts:
-                    conflicts[key] = {
-                        'evidence': evidence_claims[key],
-                        'replay': replay_claims.get(key, 'N/A'),
-                        'readme': readme_claims[key]
-                    }
-                else:
-                    conflicts[key]['readme'] = readme_claims[key]
-        # 比较回放与 README
-        for key in set(replay_claims.keys()) & set(readme_claims.keys()):
-            if replay_claims[key] != readme_claims[key]:
-                if key not in conflicts:
-                    conflicts[key] = {
-                        'evidence': evidence_claims.get(key, 'N/A'),
-                        'replay': replay_claims[key],
-                        'readme': readme_claims[key]
-                    }
-                else:
-                    conflicts[key]['readme'] = readme_claims[key]
-        return conflicts
-
-    def generate_recheck_command(self, conflicts: Dict[str, Any]) -> str:
-        """基于冲突生成最小复验命令字符串。"""
-        if not conflicts:
-            return "echo 'No conflicts detected.'"
-        # 生成一个 Python 命令来重新运行仲裁并打印冲突详情
-        cmd = (
-            "python -c \""
-            "from conflict_arbitration import ConflictArbitrator; "
-            "a = ConflictArbitrator(); a.load_data(); "
-            "c = a.check_conflicts(); print(c)\""
+    def arbitrate(self, evidences: Iterable[Any]) -> ArbitrationDecision:
+        return arbitrate(
+            evidences,
+            min_margin=self.min_margin,
+            min_corroboration=self.min_corroboration,
         )
-        return cmd
 
-    @staticmethod
-    def _jsonable(value: Any) -> Any:
-        """Return a deterministic JSON-safe value."""
-        try:
-            json.dumps(value, sort_keys=True, ensure_ascii=False)
-            return value
-        except (TypeError, ValueError):
-            return repr(value)
+    def replay(self, decision_or_payload: Any) -> ArbitrationDecision:
+        return replay(decision_or_payload)
 
-    @staticmethod
-    def _stable_text(value: Any) -> str:
-        return json.dumps(ConflictArbitrator._jsonable(value), sort_keys=True, ensure_ascii=False, separators=(',', ':'))
 
-    @staticmethod
-    def _as_float(value: Any, default: float = 0.0) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
+def replay_sample() -> Dict[str, Any]:
+    """Return a deterministic sample showing the anti-single-metric rule."""
 
-    @classmethod
-    def _evidence_strength(cls, evidence_items: List[Any]) -> float:
-        """Score evidence before policy preference so arbitration does not reward loud but unproven plans."""
-        total = 0.0
-        for item in evidence_items:
-            if isinstance(item, dict):
-                weight = cls._as_float(item.get("weight", item.get("score", item.get("confidence", 1.0))), 1.0)
-                if str(item.get("status", item.get("verdict", "pass"))).lower() in {"fail", "failed", "reject", "rejected"}:
-                    weight *= -1.0
-                total += weight
-            elif item:
-                total += 1.0
-        return round(total, 6)
-
-    @classmethod
-    def _evidence_refs(cls, evidence_items: List[Any]) -> List[str]:
-        """Compact deterministic evidence labels for audit records."""
-        refs = []
-        for index, item in enumerate(evidence_items):
-            if isinstance(item, dict):
-                ref = item.get("id") or item.get("name") or item.get("source") or item.get("path") or "evidence-%d" % index
-                refs.append(str(ref))
-            else:
-                refs.append(str(item))
-        return refs
-
-    @classmethod
-    def _evidence_freshness(cls, evidence_items: List[Any], horizon_days: float = 30.0) -> float:
-        """Return 0..1 freshness from explicit freshness, age_days, or epoch timestamps."""
-        if not evidence_items:
-            return 0.0
-        scores: List[float] = []
-        now = time.time()
-        for item in evidence_items:
-            if not isinstance(item, dict):
-                scores.append(0.5)
-                continue
-            if "freshness" in item or "freshness_score" in item:
-                raw = item.get("freshness", item.get("freshness_score"))
-                scores.append(max(0.0, min(1.0, cls._as_float(raw, 0.0))))
-                continue
-            if "age_days" in item:
-                age_days = max(0.0, cls._as_float(item.get("age_days"), horizon_days))
-                scores.append(max(0.0, min(1.0, 1.0 - age_days / horizon_days)))
-                continue
-            stamp = item.get("timestamp", item.get("ts", item.get("time")))
-            stamp_value = cls._as_float(stamp, 0.0)
-            if stamp_value > 0.0:
-                age_days = max(0.0, (now - stamp_value) / 86400.0)
-                scores.append(max(0.0, min(1.0, 1.0 - age_days / horizon_days)))
-            else:
-                scores.append(0.5)
-        return round(sum(scores) / float(len(scores)), 6)
-
-    @classmethod
-    def _decision_outcome(cls, winner: Dict[str, Any], runner_up: Optional[Dict[str, Any]], contract: Dict[str, Any]) -> Tuple[str, str]:
-        """Classify a conflict decision as adopt, defer, or verify."""
-        min_verify_evidence = cls._as_float(contract.get("min_verify_evidence", 0.0), 0.0)
-        min_verify_freshness = cls._as_float(contract.get("min_verify_freshness", 0.2), 0.2)
-        max_adopt_risk = cls._as_float(contract.get("max_adopt_risk", 0.75), 0.75)
-        defer_value_margin = cls._as_float(contract.get("defer_value_margin", 0.05), 0.05)
-        defer_score_margin = cls._as_float(contract.get("defer_score_margin", 5.0), 5.0)
-
-        if winner["evidence_score"] <= min_verify_evidence:
-            return "verify", "winning plan lacks positive evidence"
-        if winner["freshness_score"] < min_verify_freshness:
-            return "verify", "winning evidence is stale or missing freshness"
-        if winner["risk"] > max_adopt_risk:
-            return "verify", "winning plan risk exceeds adoption threshold"
-        if runner_up is not None:
-            value_gap = abs(winner["value"] - runner_up["value"])
-            score_gap = abs(winner["score"] - runner_up["score"])
-            if value_gap <= defer_value_margin and score_gap <= defer_score_margin:
-                return "defer", "top contenders are too close for autonomous adoption"
-        return "adopt", "winner clears evidence, freshness, risk, and margin gates"
-
-    def _normalise_plan(self, plan: Dict[str, Any], index: int) -> Dict[str, Any]:
-        if not isinstance(plan, dict):
-            plan = {"plan": plan}
-        plan_id = str(plan.get("id") or plan.get("plan_id") or plan.get("name") or "plan-%d" % index)
-        actions = plan.get("actions", [])
-        if actions is None:
-            actions = []
-        if not isinstance(actions, list):
-            actions = [actions]
-        priority = self._as_float(plan.get("priority", 0.0))
-        value = self._as_float(plan.get("value", plan.get("expected_value", plan.get("impact", priority))), priority)
-        confidence = self._as_float(plan.get("confidence", 0.0))
-        risk = self._as_float(plan.get("risk", 0.0))
-        evidence_items = plan.get("evidence", [])
-        if evidence_items is None:
-            evidence_items = []
-        if not isinstance(evidence_items, list):
-            evidence_items = [evidence_items]
-        evidence_score = self._evidence_strength(evidence_items)
-        freshness_score = self._evidence_freshness(evidence_items)
-        score = round(value * 100.0 + priority * 25.0 + confidence * 10.0 + evidence_score + freshness_score * 10.0 - risk * 50.0, 6)
-        return {
-            "id": plan_id,
-            "strategy": str(plan.get("strategy") or plan.get("source") or plan_id),
-            "input_order": index,
-            "priority": priority,
-            "value": value,
-            "confidence": confidence,
-            "risk": risk,
-            "evidence_count": len(evidence_items),
-            "evidence_score": evidence_score,
-            "freshness_score": freshness_score,
-            "evidence_refs": self._evidence_refs(evidence_items),
-            "score": score,
-            "actions": actions,
-        }
-
-    def _normalise_action(self, action: Any, action_index: int) -> Dict[str, Any]:
-        if isinstance(action, dict):
-            target = action.get("target") or action.get("path") or action.get("file") or action.get("name") or action.get("id")
-            operation = action.get("op") or action.get("operation") or action.get("type") or action.get("kind") or "change"
-            value = action.get("value", action.get("content", action.get("patch", action.get("args", ""))))
-        else:
-            text = str(action)
-            target = text
-            operation = text.split(None, 1)[0] if text.split(None, 1) else "change"
-            value = text
-        if target is None:
-            target = "action-%d" % action_index
-        return {
-            "target": str(target),
-            "operation": str(operation),
-            "value": self._jsonable(value),
-            "signature": "%s:%s" % (str(operation), self._stable_text(value)),
-        }
-
-    def arbitrate_plans(self, plans: List[Dict[str, Any]], contract: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Arbitrate conflicting multi-strategy plans and return an auditable dict.
-
-        Minimal contract:
-        plans = [
+    decision = arbitrate(
+        [
             {
-                "id": "planner-a",
-                "strategy": "fast_fix",
-                "priority": 1,
-                "confidence": 0.7,
-                "risk": 0.2,
-                "evidence": ["test-x"],
-                "actions": [{"target": "crab.py", "op": "edit", "value": "..."}],
-            }
+                "id": "pretty_metric",
+                "claim": "patch improves reliability",
+                "stance": "support",
+                "confidence": 0.98,
+                "trust": 0.72,
+                "source": "benchmark",
+                "metric": "headline_pass_rate",
+            },
+            {
+                "id": "fresh_regression",
+                "claim": "patch improves reliability",
+                "stance": "oppose",
+                "confidence": 0.71,
+                "trust": 0.86,
+                "source": "evidence",
+                "metric": "fresh_failure",
+            },
+            {
+                "id": "operator_note",
+                "claim": "patch improves reliability",
+                "stance": "oppose",
+                "confidence": 0.62,
+                "trust": 0.80,
+                "source": "audit",
+                "metric": "manual_replay",
+            },
         ]
-
-        The result is JSON-serialisable and deterministic.
-        """
-        contract = contract or {}
-        normalised = [self._normalise_plan(plan, index) for index, plan in enumerate(plans or [])]
-        by_target: Dict[str, List[Dict[str, Any]]] = {}
-        selected_actions: List[Dict[str, Any]] = []
-        rejected_actions: List[Dict[str, Any]] = []
-        deferred_actions: List[Dict[str, Any]] = []
-        verification_actions: List[Dict[str, Any]] = []
-        conflicts: List[Dict[str, Any]] = []
-        decisions: List[Dict[str, Any]] = []
-        audit_trail: List[Dict[str, Any]] = []
-
-        for plan in normalised:
-            for action_index, action in enumerate(plan["actions"]):
-                item = self._normalise_action(action, action_index)
-                item.update({
-                    "plan_id": plan["id"],
-                    "strategy": plan["strategy"],
-                    "input_order": plan["input_order"],
-                    "score": plan["score"],
-                    "value": plan["value"],
-                    "risk": plan["risk"],
-                    "evidence_score": plan["evidence_score"],
-                    "freshness_score": plan["freshness_score"],
-                    "evidence_refs": plan["evidence_refs"],
-                    "action_index": action_index,
-                    "raw_action": self._jsonable(action),
-                })
-                by_target.setdefault(item["target"], []).append(item)
-
-        for target in sorted(by_target):
-            contenders = by_target[target]
-            signatures = {item["signature"] for item in contenders}
-            if len(signatures) <= 1:
-                for item in sorted(contenders, key=lambda x: (x["input_order"], x["action_index"], x["plan_id"])):
-                    selected_actions.append(item)
-                audit_trail.append({
-                    "target": target,
-                    "event": "no_conflict",
-                    "policy": "same_signature_accept_all",
-                    "plan_ids": [item["plan_id"] for item in sorted(contenders, key=lambda x: (x["input_order"], x["action_index"], x["plan_id"]))],
-                })
-                continue
-
-            ranked = sorted(contenders, key=lambda x: (-x["value"], x["risk"], -x["freshness_score"], -x["evidence_score"], -x["score"], x["input_order"], x["plan_id"], x["action_index"]))
-            winner = ranked[0]
-            losers = ranked[1:]
-            outcome, outcome_reason = self._decision_outcome(winner, ranked[1] if len(ranked) > 1 else None, contract)
-            conflict = {
-                "target": target,
-                "reason": "same target has incompatible action signatures",
-                "winner_plan_id": winner["plan_id"],
-                "winner_signature": winner["signature"],
-                "contenders": [
-                    {
-                        "plan_id": item["plan_id"],
-                        "strategy": item["strategy"],
-                        "action_index": item["action_index"],
-                        "operation": item["operation"],
-                        "signature": item["signature"],
-                        "value": item["value"],
-                        "risk": item["risk"],
-                        "evidence_score": item["evidence_score"],
-                        "freshness_score": item["freshness_score"],
-                        "evidence_refs": item["evidence_refs"],
-                        "score": item["score"],
-                        "input_order": item["input_order"],
-                    }
-                    for item in ranked
-                ],
-            }
-            decision = {
-                "target": target,
-                "policy": "value_then_low_risk_then_fresh_evidence_then_score",
-                "outcome": outcome,
-                "outcome_reason": outcome_reason,
-                "winner_plan_id": winner["plan_id"],
-                "rejected_plan_ids": [item["plan_id"] for item in losers] if outcome == "adopt" else [],
-                "deferred_plan_ids": [item["plan_id"] for item in ranked] if outcome == "defer" else [],
-                "verification_plan_ids": [item["plan_id"] for item in ranked] if outcome == "verify" else [],
-                "winner_value": winner["value"],
-                "winner_risk": winner["risk"],
-                "winner_evidence_score": winner["evidence_score"],
-                "winner_freshness_score": winner["freshness_score"],
-                "winner_evidence_refs": winner["evidence_refs"],
-                "score_explanation": "rank = value first; tie-break lower risk, fresher evidence, evidence strength, score = value*100 + priority*25 + confidence*10 + evidence_score + freshness*10 - risk*50; then input order",
-            }
-            conflicts.append(conflict)
-            decisions.append(decision)
-            audit_trail.append({
-                "target": target,
-                "event": "conflict_%s" % outcome,
-                "policy": decision["policy"],
-                "outcome": outcome,
-                "outcome_reason": outcome_reason,
-                "winner_plan_id": winner["plan_id"],
-                "winner_value": winner["value"],
-                "winner_risk": winner["risk"],
-                "winner_freshness_score": winner["freshness_score"],
-                "winner_evidence_score": winner["evidence_score"],
-                "rejected_plan_ids": decision["rejected_plan_ids"],
-                "deferred_plan_ids": decision["deferred_plan_ids"],
-                "verification_plan_ids": decision["verification_plan_ids"],
-            })
-            if outcome == "adopt":
-                selected_actions.append(winner)
-                rejected_actions.extend(losers)
-            elif outcome == "defer":
-                deferred_actions.extend(ranked)
-            else:
-                verification_actions.extend(ranked)
-
-        decision_counts = {
-            "adopt": sum(1 for item in decisions if item.get("outcome") == "adopt"),
-            "defer": sum(1 for item in decisions if item.get("outcome") == "defer"),
-            "verify": sum(1 for item in decisions if item.get("outcome") == "verify"),
-        }
-        status = "no_conflicts"
-        if conflicts:
-            status = "needs_verification" if decision_counts["verify"] else ("deferred" if decision_counts["defer"] else "conflicts_resolved")
-        audit = {
-            "schema_version": self.ARBITRATION_SCHEMA_VERSION,
-            "status": status,
-            "contract": self._jsonable(contract),
-            "decision_counts": decision_counts,
-            "plan_count": len(normalised),
-            "policy": "value_then_low_risk_then_fresh_evidence_then_score",
-            "audit_trail": audit_trail,
-            "plans": [
-                {
-                    "id": plan["id"],
-                    "strategy": plan["strategy"],
-                    "input_order": plan["input_order"],
-                    "priority": plan["priority"],
-                    "value": plan["value"],
-                    "confidence": plan["confidence"],
-                    "risk": plan["risk"],
-                    "evidence_count": plan["evidence_count"],
-                    "evidence_score": plan["evidence_score"],
-                    "freshness_score": plan["freshness_score"],
-                    "evidence_refs": plan["evidence_refs"],
-                    "score": plan["score"],
-                    "action_count": len(plan["actions"]),
-                }
-                for plan in normalised
-            ],
-            "conflicts": conflicts,
-            "decisions": decisions,
-            "accepted_plan_ids": sorted({item["plan_id"] for item in selected_actions}),
-            "rejected_plan_ids": sorted({item["plan_id"] for item in rejected_actions}),
-            "selected_actions": [
-                {
-                    "plan_id": item["plan_id"],
-                    "strategy": item["strategy"],
-                    "target": item["target"],
-                    "operation": item["operation"],
-                    "signature": item["signature"],
-                    "score": item["score"],
-                    "raw_action": item["raw_action"],
-                }
-                for item in sorted(selected_actions, key=lambda x: (x["target"], x["input_order"], x["action_index"], x["plan_id"]))
-            ],
-            "rejected_actions": [
-                {
-                    "plan_id": item["plan_id"],
-                    "strategy": item["strategy"],
-                    "target": item["target"],
-                    "operation": item["operation"],
-                    "signature": item["signature"],
-                    "score": item["score"],
-                    "raw_action": item["raw_action"],
-                }
-                for item in sorted(rejected_actions, key=lambda x: (x["target"], x["input_order"], x["action_index"], x["plan_id"]))
-            ],
-            "deferred_actions": [
-                {
-                    "plan_id": item["plan_id"],
-                    "strategy": item["strategy"],
-                    "target": item["target"],
-                    "operation": item["operation"],
-                    "signature": item["signature"],
-                    "score": item["score"],
-                    "raw_action": item["raw_action"],
-                }
-                for item in sorted(deferred_actions, key=lambda x: (x["target"], x["input_order"], x["action_index"], x["plan_id"]))
-            ],
-            "verification_actions": [
-                {
-                    "plan_id": item["plan_id"],
-                    "strategy": item["strategy"],
-                    "target": item["target"],
-                    "operation": item["operation"],
-                    "signature": item["signature"],
-                    "score": item["score"],
-                    "raw_action": item["raw_action"],
-                }
-                for item in sorted(verification_actions, key=lambda x: (x["target"], x["input_order"], x["action_index"], x["plan_id"]))
-            ],
-            "recheck_command": (
-                "python -c \"import json; "
-                "from conflict_arbitration import ConflictArbitrator; "
-                "print(json.dumps(ConflictArbitrator().arbitrate_plans([]), sort_keys=True, ensure_ascii=False))\""
-            ),
-        }
-        json.dumps(audit, sort_keys=True, ensure_ascii=False)
-        return audit
-
-    def arbitrate_plans_json(self, plans: List[Dict[str, Any]], contract: Optional[Dict[str, Any]] = None, indent: int = 2) -> str:
-        """Return the plan arbitration audit as deterministic JSON text."""
-        return json.dumps(self.arbitrate_plans(plans, contract=contract), sort_keys=True, ensure_ascii=False, indent=indent)
+    )
+    return decision.to_dict()
 
 
-# 便捷函数
-def arbitrate_conflicts() -> str:
-    """检查冲突并返回复验命令。"""
-    arbitrator = ConflictArbitrator()
-    arbitrator.load_data()
-    conflicts = arbitrator.check_conflicts()
-    return arbitrator.generate_recheck_command(conflicts)
+def build_replay_sample() -> Dict[str, Any]:
+    return replay_sample()
 
 
-def arbitrate_plans(plans: List[Dict[str, Any]], contract: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Convenience wrapper for the minimal plan arbitration contract."""
-    return ConflictArbitrator().arbitrate_plans(plans, contract=contract)
-
-
-def arbitrate_plans_json(plans: List[Dict[str, Any]], contract: Optional[Dict[str, Any]] = None, indent: int = 2) -> str:
-    """Convenience wrapper returning an auditable JSON arbitration report."""
-    return ConflictArbitrator().arbitrate_plans_json(plans, contract=contract, indent=indent)
-
-
-if __name__ == '__main__':
-    print(arbitrate_conflicts())
+__all__ = [
+    "ArbitrationDecision",
+    "ConflictArbitrator",
+    "NormalizedEvidence",
+    "arbitrate",
+    "arbitrate_conflict",
+    "build_replay_sample",
+    "decide",
+    "normalize_evidence",
+    "replay",
+    "replay_decision",
+    "replay_sample",
+]
