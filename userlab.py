@@ -365,12 +365,39 @@ def main(argv: list[str] | None = None) -> None:
     else:
         chosen = JOURNEYS
 
+    # 预检查：确保旅程中引用的所有 .py 脚本都存在，提前暴露「文件不存在」这种低级卡点
+    missing = []
+    for j in chosen:
+        for step in j.steps:
+            for arg in step.argv[1:]:
+                if arg.endswith('.py') and not (REPO_ROOT / arg).exists():
+                    missing.append((j.persona, step.action, arg))
+    if missing:
+        print("⚠️  以下旅程步骤中引用的 .py 文件不存在，无法完整运行旅程：")
+        for persona, action, script in missing:
+            print(f"    {persona}: {action} -> {script}")
+        print("请确保这些文件存在，或调整旅程定义。")
+        sys.exit(2)
+
     if args.json:
         print(json.dumps(manifest(args.run is not None, chosen),
                          ensure_ascii=False, indent=2))
         return
 
     if args.run is not None:
+        # 预检查：确保旅程中引用的所有 .py 脚本都存在，提前暴露「文件不存在」这种低级卡点
+        missing = []
+        for j in chosen:
+            for step in j.steps:
+                for arg in step.argv[1:]:
+                    if arg.endswith('.py') and not (REPO_ROOT / arg).exists():
+                        missing.append((j.persona, step.action, arg))
+        if missing:
+            print("⚠️  以下旅程步骤中引用的 .py 文件不存在，无法完整运行旅程：")
+            for persona, action, script in missing:
+                print(f"    {persona}: {action} -> {script}")
+            print("请确保这些文件存在，或调整旅程定义。")
+            sys.exit(2)
         results = [walk(j) for j in chosen]
         all_ok = all(r.passed for r in results)
         if not (args.quiet and all_ok):
