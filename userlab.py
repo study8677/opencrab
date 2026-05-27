@@ -120,6 +120,20 @@ JOURNEYS: list[Journey] = [
                  _PY + ["evidence.py", "--quiet"]),
         ],
     ),
+    Journey(
+        persona="value-seeker",
+        icon="💎",
+        title="价值复核者——判断一次进化是否真的有用",
+        goal="确认进化不只自测变绿，还能挂到一条真实、可复跑、无递归的用户旅程上",
+        steps=[
+            Step("先读出价值账本，确认每张卡都有场景、受益者、验收、反指标与旅程字段",
+                 _PY + ["value.py", "--json"]),
+            Step("再读出用户实验室旅程定义，确认这条验收路本身可被复跑和审计",
+                 _PY + ["userlab.py", "--json"]),
+            Step("最后跑核心烟雾，确认这条朝外的价值复核没有牺牲最基本可用性",
+                 _PY + ["smoke.py", "--quiet"]),
+        ],
+    ),
 ]
 
 
