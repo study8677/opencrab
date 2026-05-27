@@ -64,6 +64,7 @@ GATE_ORDER = [GATE_SYNTAX, GATE_IMPORT, GATE_REPLAY]
 STAGE_LOCATE = "locate"        # 定不到那个函数/方法/CLI 节点
 STAGE_TRANSFORM = "transform"  # transform 抛错 / 产出不是字符串
 STAGE_BOUNDED = "bounded"      # 改完仍被补丁契约判越界(或 no-op)
+STAGE_SIGNATURE = "signature"  # brain-only 小修破坏函数签名，伤到调用接口
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,6 +117,12 @@ def rewrite_fit(target, qualname, transform, *, replay=None,
             return RewriteFitResult(False, stage, rr.reason, str(target), qualname,
                                     locus_meta, gates_run, verdict_meta)
         candidate = rr.source
+
+        sig_verdict = astlocator.patchcontract.validate_signatures_unchanged(before, candidate)
+        if not sig_verdict.ok:
+            verdict_meta = sig_verdict.to_meta()
+            return RewriteFitResult(False, STAGE_SIGNATURE, sig_verdict.reason, str(target), qualname,
+                                    locus_meta, gates_run, verdict_meta)
 
         # ── 把候选以 {模块名}.py 写进只含它一个文件的隔离覆盖目录，三闸都在隔离子进程里跑 ──
         modname = target.stem
@@ -171,7 +178,7 @@ def manifest() -> dict:
     """机读：三闸闸序 + 阈值(给 health / 外部消费)。"""
     return {
         "gates": GATE_ORDER,
-        "pre_gate_stages": [STAGE_LOCATE, STAGE_TRANSFORM, STAGE_BOUNDED],
+        "pre_gate_stages": [STAGE_LOCATE, STAGE_TRANSFORM, STAGE_BOUNDED, STAGE_SIGNATURE],
         "gate_timeout": patchfitroom.GATE_TIMEOUT,
         "max_changed_lines": astlocator.patchcontract.DEFAULT_MAX_CHANGED_LINES,
         "max_line_delta": astlocator.patchcontract.DEFAULT_MAX_LINE_DELTA,
@@ -302,6 +309,17 @@ def selfcheck(quiet: bool = False) -> bool:
         if target.read_text(encoding="utf-8") != before:
             failures.append("apply=False 竟把候选写回了真文件")
     in_repo(s_dryfit)
+
+    # 8.5) signature：补丁虽能通过行为回放，但改了函数参数名 → 进试衣间前拒收，真文件不动
+    def s_signature(dp, target):
+        before = target.read_text(encoding="utf-8")
+        break_sig = lambda seg: seg.replace("def bump(n):", "def bump(x):").replace("n + 2", "x + 1")  # noqa: E731
+        r = rewrite_fit(target, "bump", break_sig, replay=_REPLAY, repo=dp)
+        if r.written or r.gate != STAGE_SIGNATURE or r.gates_run:
+            failures.append(f"破坏函数签名的小修该卡在 signature(不进试衣间)，实得 {r.to_meta()}")
+        if target.read_text(encoding="utf-8") != before:
+            failures.append("signature 拒收后真文件竟被改动")
+    in_repo(s_signature)
 
     # 9) no-op 探针：transform 没真改东西 → 补丁契约判 no-op，卡在 bounded、真文件不动
     def s_noop(dp, target):

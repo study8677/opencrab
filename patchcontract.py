@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import dataclasses
 import difflib
 import json
@@ -58,6 +59,7 @@ RULE_CODES: dict[str, str] = {
     "malformed-empty": "补丁清成了空白 —— 把文件改没了，绝不是「修一处伤」",
     "malformed-base": "原文不是字符串 —— 无从据此判断改动边界",
     "no-op": "补丁与原文一字不差 —— 没有改动，不构成一个补丁",
+    "signature-changed": "函数签名发生变化 —— brain-only 小修不得伤到调用接口",
     "out-of-bounds-span": "改动行数越界 —— 一招只该修一处，这是重写式大改",
     "out-of-bounds-growth": "文件行数增减越界 —— 大段增删，超出「局部修一处」",
 }
@@ -74,6 +76,63 @@ def changed_line_count(before: str, after: str) -> int:
             continue
         n += max(i2 - i1, j2 - j1)
     return n
+
+
+def _function_signatures(source: str) -> dict[str, str]:
+    """抽取模块内函数/方法的签名指纹；语法错误交给调用方决定是否放行到 syntax 闸。"""
+    tree = ast.parse(source)
+    sigs: dict[str, str] = {}
+    stack: list[str] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+            stack.append(node.name)
+            for item in node.body:
+                self.visit(item)
+            stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            qn = ".".join(stack + [node.name])
+            args = ast.dump(node.args, include_attributes=False)
+            returns = ast.dump(node.returns, include_attributes=False) if node.returns else ""
+            sigs[qn] = f"{args} -> {returns}"
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+            self.visit_FunctionDef(node)  # 同一套签名规则：名字/参数/返回注解都不得漂
+
+    Visitor().visit(tree)
+    return sigs
+
+
+def validate_signatures_unchanged(before, after) -> PatchVerdict:
+    """契约闸：函数/方法签名必须不变；语法残段不在这里判，继续交给 syntax 闸。"""
+    try:
+        if not isinstance(before, str) or not isinstance(after, str):
+            return PatchVerdict(False, "malformed-type", RULE_CODES["malformed-type"])
+        try:
+            before_sigs = _function_signatures(before)
+            after_sigs = _function_signatures(after)
+        except SyntaxError:
+            return _OK
+        if before_sigs != after_sigs:
+            missing = sorted(set(before_sigs) - set(after_sigs))
+            added = sorted(set(after_sigs) - set(before_sigs))
+            changed = sorted(k for k in set(before_sigs) & set(after_sigs)
+                             if before_sigs[k] != after_sigs[k])
+            bits = []
+            if changed:
+                bits.append("变更 " + ", ".join(changed[:3]))
+            if missing:
+                bits.append("删除 " + ", ".join(missing[:3]))
+            if added:
+                bits.append("新增 " + ", ".join(added[:3]))
+            detail = "；".join(bits) if bits else "签名集合不一致"
+            return PatchVerdict(False, "signature-changed",
+                                f"{RULE_CODES['signature-changed']}（{detail}）")
+        return _OK
+    except Exception as e:  # noqa: BLE001 —— 签名闸自身也要可拒不可崩
+        return PatchVerdict(False, "signature-changed",
+                            f"判定函数签名时出意外，保守拒收：{type(e).__name__}: {e}")
 
 
 def validate(before, after, *,
@@ -164,6 +223,15 @@ def _selfcheck(quiet: bool = False) -> bool:
     # 原文本身畸形（非字符串）也要稳稳拒收，绝不抛错
     if validate(None, "def add(a, b):\n    return a + b\n").code != "malformed-base":
         failures.append("原文为 None 时应判 malformed-base")
+
+    # —— 函数签名契约：brain-only 小修不得伤到调用接口 ——
+    sig_before = "def add(a, b):\n    return a + b\n"
+    sig_after = "def add(a, b=0):\n    return a + b\n"
+    v_sig = validate_signatures_unchanged(sig_before, sig_after)
+    if v_sig.ok or v_sig.code != "signature-changed":
+        failures.append(f"破坏默认参数的补丁应判 signature-changed，实得 {v_sig.code}")
+    if not validate_signatures_unchanged(sig_before, sig_before.replace("a + b", "a - b")).ok:
+        failures.append("只改函数体、不改签名的小修不应被签名闸拒收")
 
     # —— 越界：能编译也算大改，brain 收不得 ——
     expect_reject("\n".join(f"line{i}" for i in range(40)), "out-of-bounds-growth", "重写成 40 行的新文件")
