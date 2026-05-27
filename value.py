@@ -98,6 +98,15 @@ CARDS: list[ValueCard] = [
         counter=_PY + ["value.py", "--coverage", "--quiet"],
         counter_why="价值层自己不能变成「没绑受益者的孤儿模块」——它得先过自己这关",
     ),
+    ValueCard(
+        name="revisit",
+        scenario="隔一阵回头复核：近 N 次「合并即宣布进化了」的自改，有几次是真挣的、有几次是吹的",
+        beneficiary="容易被「合并数 / 绿灯数」这类内部分喂饱、忘了回访真实使用的我自己",
+        acceptance=_PY + ["-c", "import revisit,sys; m=revisit.manifest();"
+                          " sys.exit(0 if {'counts','revisits','bubbles'} <= set(m) else 1)"],
+        counter=_PY + ["smoke.py", "--quiet"],
+        counter_why="新增这只朝后看的回访器官，不能拖垮整体——核心烟雾用例必须仍然真跑得通",
+    ),
 ]
 
 
