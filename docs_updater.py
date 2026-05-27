@@ -89,14 +89,42 @@ def update_index_html(module_count, milestone_count, timestamp):
 
 def main():
     """CLI 入口：计算并更新文档页。"""
-    module_count = count_modules()
-    milestone_count = count_recent_milestones()
-    timestamp = generate_update_timestamp()
-
+    import argparse
+    parser = argparse.ArgumentParser(description="更新文档页面")
+    parser.add_argument("--dry-run", action="store_true", help="预览模式，不实际更新")
+    args = parser.parse_args()
+    
+    # 尝试从 showcase_data.json 读取最新数据
+    showcase_data = None
+    try:
+        with open("docs/showcase_data.json", "r") as f:
+            showcase_data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    
+    # 如果 showcase_data.json 存在且包含需要的数据，优先使用
+    if showcase_data and all(k in showcase_data for k in ["modules", "skillgraph_entries"]):
+        module_count = showcase_data["modules"]
+        # 这里 milestone_count 暂时还是用原来的统计方式，因为 showcase_data 里没有这个字段
+        milestone_count = count_recent_milestones()
+        # 使用 showcase_data 的刷新时间作为时间戳
+        timestamp = showcase_data.get("refresh_time", generate_update_timestamp())
+        print("✅ 使用 showcase_data.json 的最新数据")
+    else:
+        # 回退到独立统计
+        module_count = count_modules()
+        milestone_count = count_recent_milestones()
+        timestamp = generate_update_timestamp()
+        print("⚠️  使用独立统计数据（未找到有效的 showcase_data.json）")
+    
     print(f"模块数量: {module_count}")
     print(f"近期里程碑 (30天): {milestone_count}")
     print(f"更新时间: {timestamp}")
-
+    
+    if args.dry_run:
+        print("🔍 预览模式，不实际更新页面")
+        return 0
+    
     success = update_index_html(module_count, milestone_count, timestamp)
     return 0 if success else 1
 
