@@ -33,9 +33,12 @@ def brain_only_single_function_replace(
 
     rewritten = _rewrite_with_astrewriter(source, span, replacement_source)
     if rewritten is not None:
-        return rewritten
+        return _fitroom_accept_source(rewritten, "<brain-only-astbridge>")
 
-    return _replace_line_span(source, span, replacement_source)
+    return _fitroom_accept_source(
+        _replace_line_span(source, span, replacement_source),
+        "<brain-only-astbridge>",
+    )
 
 
 def brain_only_single_function_replace_in_file(
@@ -61,6 +64,73 @@ def brain_only_single_function_replace_in_file(
     if not dry_run and rewritten != original:
         file_path.write_text(rewritten, encoding="utf-8")
     return rewritten
+
+
+def brain_intent_single_function_replace(
+    intent: dict[str, Any],
+    *,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Run a narrow brain-intent -> AST span -> rewrite -> fitroom chain.
+    
+    Expected intent keys:
+      - function_name, target, or symbol
+      - replacement_source or replacement
+      - either source text or path
+    
+    Returns metadata plus the rewritten source.  When a path is provided and
+    *dry_run* is false, the accepted rewrite is written back to disk.
+    """
+    
+    if not isinstance(intent, dict):
+        raise BrainOnlyAstPatchError("intent must be a dict")
+    
+    function_name = (
+        intent.get("function_name")
+        or intent.get("target")
+        or intent.get("symbol")
+    )
+    replacement_source = (
+        intent.get("replacement_source")
+        or intent.get("replacement")
+    )
+    if not isinstance(function_name, str) or not function_name:
+        raise BrainOnlyAstPatchError("intent is missing function_name")
+    if not isinstance(replacement_source, str) or not replacement_source:
+        raise BrainOnlyAstPatchError("intent is missing replacement_source")
+    
+    path_value = intent.get("path")
+    source = intent.get("source")
+    if source is None:
+        if path_value is None:
+            raise BrainOnlyAstPatchError("intent must include source or path")
+        source = Path(path_value).read_text(encoding="utf-8")
+    if not isinstance(source, str):
+        raise BrainOnlyAstPatchError("intent source must be text")
+    
+    span = _locate_with_astlocator(source, function_name)
+    if span is None:
+        span = _locate_top_level_function_span(source, function_name)
+    
+    rewritten = brain_only_single_function_replace(
+        source,
+        function_name,
+        replacement_source,
+    )
+    fitroom_path = str(path_value) if path_value is not None else "<brain-intent>"
+    _fitroom_accept_source(rewritten, fitroom_path)
+    
+    if path_value is not None and not dry_run and rewritten != source:
+        Path(path_value).write_text(rewritten, encoding="utf-8")
+    
+    return {
+        "accepted": True,
+        "changed": rewritten != source,
+        "function_name": function_name,
+        "path": str(path_value) if path_value is not None else None,
+        "span": {"start_line": span[0], "end_line": span[1]},
+        "source": rewritten,
+    }
 
 
 def _validate_single_replacement(function_name: str, replacement_source: str) -> None:
@@ -188,6 +258,17 @@ def _normalise_span(result: Any) -> tuple[int, int] | None:
     if isinstance(start, int) and isinstance(end, int) and 1 <= start <= end:
         return start, end
     return None
+
+
+def _fitroom_accept_source(source: str, path: str) -> str:
+    try:
+        ast.parse(source, filename=path)
+        compile(source, path, "exec")
+    except SyntaxError as exc:
+        raise BrainOnlyAstPatchError(
+            f"fitroom rejected rewritten source: {exc}"
+        ) from exc
+    return source
 
 
 def _replace_line_span(source: str, span: tuple[int, int], replacement_source: str) -> str:
