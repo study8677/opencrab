@@ -89,13 +89,17 @@ def _dry_run_preview(task: str, *, repo: pathlib.Path, branch: str, base: str,
         risks.append(f"⚠️ 工作区已有 {n} 处未提交改动 —— git add -A 会把它们一起卷进本次提交")
     if _git(repo, "rev-parse", "--verify", branch).returncode == 0:
         risks.append(f"⚠️ 分支 {branch} 已存在 —— 实跑开分支会失败")
+    brain_preview = _brain_feature_preview(task, repo)
+    risks.extend(brain_preview.get("risks", []))
     if not risks:
         risks.append("✅ 未发现明显风险点")
 
     return {"ok": False, "branch": branch, "base": base, "executor": executor,
             "available": available, "changed": False, "integrate": integrate,
             "dry_run": True, "planned_cmd": cmd, "steps": steps, "risks": risks,
-            "note": f"[预演] 模拟在 {branch} 上以 {integrate} 模式实施：{task[:70]}（未做任何改动）"}
+            "brain_only": True, "patch_plan": brain_preview.get("patch_plan", []),
+            "patch_note": brain_preview.get("note", ""),
+            "note": f"[预演] brain-only 只读拟补丁：模拟在 {branch} 上以 {integrate} 模式实施：{task[:70]}（未做任何改动）"}
 
 
 def _self_test(repo: pathlib.Path) -> tuple[bool, str]:
@@ -266,6 +270,60 @@ def _apply_changes(plan: dict, repo: pathlib.Path) -> list[str]:
         except Exception:   # noqa: BLE001
             continue
     return applied
+
+
+def _brain_feature_preview(task: str, repo: pathlib.Path) -> dict:
+    """brain-only 只读预演：让自己的脑先拟补丁计划与风险清单，绝不落盘。"""
+    try:
+        from crab import brain   # 延迟 import：预演只借脑，不触碰文件
+    except Exception as e:   # noqa: BLE001
+        return {"note": f"够不到自己的脑({type(e).__name__})",
+                "patch_plan": [],
+                "risks": [f"⚠️ brain-only 预演失败：无法导入 brain({type(e).__name__})"]}
+    files, context = _gather_context(task, repo)
+    prompt = textwrap.dedent(f"""\
+        你要先做 brain-only 只读预演，不要真的落盘：
+        {task}
+
+        你领地里现有的 .py：{', '.join(files)}
+
+        {context if context else '(没有点名要先读的现有文件；新建模块就直接 WRITE)'}
+
+        现在只输出你打算实施的代码改动(仍用 NOTE / <<<WRITE>>> / <<<EDIT>>> 格式)。
+        这些块会被当作补丁计划审阅，不会写入文件。""")
+    text, _tok = brain(_CODER_SYSTEM, prompt)
+    plan = _parse_changes(text)
+    patch_plan: list[str] = []
+    risks: list[str] = []
+    for ch in plan.get("changes", []):
+        rel = str(ch.get("path", "")).lstrip("/")
+        action = ch.get("action", "?")
+        if not rel or ".." in rel or not rel.endswith((".py", ".md", ".txt", ".json")):
+            risks.append(f"⚠️ 预演补丁路径不安全或后缀不受控：{rel or '?'}")
+            continue
+        path = repo / rel
+        if action == "write":
+            size = len(ch.get("content", ""))
+            patch_plan.append(f"write {rel}（约 {size} 字符）")
+            if path.exists():
+                risks.append(f"⚠️ WRITE 会整体覆盖已存在文件：{rel}")
+        elif action == "edit":
+            old = ch.get("old", "")
+            patch_plan.append(f"edit {rel}（替换片段约 {len(old)} 字符）")
+            if not path.exists():
+                risks.append(f"⚠️ EDIT 目标不存在：{rel}")
+            else:
+                try:
+                    count = path.read_text("utf-8").count(old) if old else 0
+                    if count != 1:
+                        risks.append(f"⚠️ EDIT 旧片段匹配次数为 {count}，实跑会跳过：{rel}")
+                except OSError as e:
+                    risks.append(f"⚠️ 无法读取 EDIT 目标 {rel}：{type(e).__name__}")
+        else:
+            risks.append(f"⚠️ 未知补丁动作：{action}")
+    if not patch_plan:
+        risks.append("⚠️ brain-only 预演未产出可审补丁块")
+    return {"note": plan.get("note", ""), "patch_plan": patch_plan, "risks": risks}
 
 
 def _brain_feature_patch(task: str, repo: pathlib.Path) -> dict:
