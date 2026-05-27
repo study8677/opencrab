@@ -145,6 +145,32 @@ class ConflictArbitrator:
         except (TypeError, ValueError):
             return default
 
+    @classmethod
+    def _evidence_strength(cls, evidence_items: List[Any]) -> float:
+        """Score evidence before policy preference so arbitration does not reward loud but unproven plans."""
+        total = 0.0
+        for item in evidence_items:
+            if isinstance(item, dict):
+                weight = cls._as_float(item.get("weight", item.get("score", item.get("confidence", 1.0))), 1.0)
+                if str(item.get("status", item.get("verdict", "pass"))).lower() in {"fail", "failed", "reject", "rejected"}:
+                    weight *= -1.0
+                total += weight
+            elif item:
+                total += 1.0
+        return round(total, 6)
+
+    @classmethod
+    def _evidence_refs(cls, evidence_items: List[Any]) -> List[str]:
+        """Compact deterministic evidence labels for audit records."""
+        refs = []
+        for index, item in enumerate(evidence_items):
+            if isinstance(item, dict):
+                ref = item.get("id") or item.get("name") or item.get("source") or item.get("path") or "evidence-%d" % index
+                refs.append(str(ref))
+            else:
+                refs.append(str(item))
+        return refs
+
     def _normalise_plan(self, plan: Dict[str, Any], index: int) -> Dict[str, Any]:
         if not isinstance(plan, dict):
             plan = {"plan": plan}
@@ -162,7 +188,8 @@ class ConflictArbitrator:
             evidence_items = []
         if not isinstance(evidence_items, list):
             evidence_items = [evidence_items]
-        score = round(priority * 100.0 + confidence * 10.0 + len(evidence_items) - risk * 25.0, 6)
+        evidence_score = self._evidence_strength(evidence_items)
+        score = round(priority * 100.0 + confidence * 10.0 + evidence_score - risk * 25.0, 6)
         return {
             "id": plan_id,
             "strategy": str(plan.get("strategy") or plan.get("source") or plan_id),
@@ -171,6 +198,8 @@ class ConflictArbitrator:
             "confidence": confidence,
             "risk": risk,
             "evidence_count": len(evidence_items),
+            "evidence_score": evidence_score,
+            "evidence_refs": self._evidence_refs(evidence_items),
             "score": score,
             "actions": actions,
         }
@@ -219,6 +248,7 @@ class ConflictArbitrator:
         rejected_actions: List[Dict[str, Any]] = []
         conflicts: List[Dict[str, Any]] = []
         decisions: List[Dict[str, Any]] = []
+        audit_trail: List[Dict[str, Any]] = []
 
         for plan in normalised:
             for action_index, action in enumerate(plan["actions"]):
@@ -228,6 +258,8 @@ class ConflictArbitrator:
                     "strategy": plan["strategy"],
                     "input_order": plan["input_order"],
                     "score": plan["score"],
+                    "evidence_score": plan["evidence_score"],
+                    "evidence_refs": plan["evidence_refs"],
                     "action_index": action_index,
                     "raw_action": self._jsonable(action),
                 })
@@ -239,9 +271,15 @@ class ConflictArbitrator:
             if len(signatures) <= 1:
                 for item in sorted(contenders, key=lambda x: (x["input_order"], x["action_index"], x["plan_id"])):
                     selected_actions.append(item)
+                audit_trail.append({
+                    "target": target,
+                    "event": "no_conflict",
+                    "policy": "same_signature_accept_all",
+                    "plan_ids": [item["plan_id"] for item in sorted(contenders, key=lambda x: (x["input_order"], x["action_index"], x["plan_id"]))],
+                })
                 continue
 
-            ranked = sorted(contenders, key=lambda x: (-x["score"], x["input_order"], x["plan_id"], x["action_index"]))
+            ranked = sorted(contenders, key=lambda x: (-x["evidence_score"], -x["score"], x["input_order"], x["plan_id"], x["action_index"]))
             winner = ranked[0]
             losers = ranked[1:]
             conflict = {
@@ -256,6 +294,8 @@ class ConflictArbitrator:
                         "action_index": item["action_index"],
                         "operation": item["operation"],
                         "signature": item["signature"],
+                        "evidence_score": item["evidence_score"],
+                        "evidence_refs": item["evidence_refs"],
                         "score": item["score"],
                         "input_order": item["input_order"],
                     }
@@ -264,13 +304,23 @@ class ConflictArbitrator:
             }
             decision = {
                 "target": target,
-                "policy": "highest_score_then_input_order",
+                "policy": "evidence_score_then_score_then_input_order",
                 "winner_plan_id": winner["plan_id"],
                 "rejected_plan_ids": [item["plan_id"] for item in losers],
-                "score_explanation": "score = priority*100 + confidence*10 + evidence_count - risk*25",
+                "winner_evidence_score": winner["evidence_score"],
+                "winner_evidence_refs": winner["evidence_refs"],
+                "score_explanation": "rank = evidence_score first; tie-break score = priority*100 + confidence*10 + evidence_score - risk*25; then input order",
             }
             conflicts.append(conflict)
             decisions.append(decision)
+            audit_trail.append({
+                "target": target,
+                "event": "conflict_resolved",
+                "policy": decision["policy"],
+                "winner_plan_id": winner["plan_id"],
+                "winner_evidence_score": winner["evidence_score"],
+                "rejected_plan_ids": decision["rejected_plan_ids"],
+            })
             selected_actions.append(winner)
             rejected_actions.extend(losers)
 
@@ -279,7 +329,8 @@ class ConflictArbitrator:
             "status": "conflicts_resolved" if conflicts else "no_conflicts",
             "contract": self._jsonable(contract),
             "plan_count": len(normalised),
-            "policy": "highest_score_then_input_order",
+            "policy": "evidence_score_then_score_then_input_order",
+            "audit_trail": audit_trail,
             "plans": [
                 {
                     "id": plan["id"],
@@ -289,6 +340,8 @@ class ConflictArbitrator:
                     "confidence": plan["confidence"],
                     "risk": plan["risk"],
                     "evidence_count": plan["evidence_count"],
+                    "evidence_score": plan["evidence_score"],
+                    "evidence_refs": plan["evidence_refs"],
                     "score": plan["score"],
                     "action_count": len(plan["actions"]),
                 }
