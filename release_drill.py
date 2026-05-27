@@ -109,6 +109,70 @@ def default_low_risk_signals(metrics: Mapping[str, float] | None = None) -> tupl
     )
 
 
+def injected_failure_signals(
+    case: str,
+    metrics: Mapping[str, float] | None = None,
+) -> tuple[DrillSignal, ...]:
+    """Return canary signals with one deliberate releasegate failure injected.
+    
+    Supported cases:
+    - evidence_expired: stale evidence must block widening.
+    - key_false_positive: an untriaged secret-scan alert, even if later false,
+      must block release until explicitly cleared.
+    - rollback_failed: failed rollback verification must block release.
+    """
+    
+    normalized = case.strip().lower().replace("-", "_")
+    signals = list(default_low_risk_signals(metrics))
+    
+    if normalized == "evidence_expired":
+        signals.append(
+            DrillSignal(
+                "evidence_age_seconds",
+                7200.0,
+                900.0,
+                "max",
+                "injected stale release evidence; gate must demand fresh proof",
+            )
+        )
+    elif normalized == "key_false_positive":
+        signals.append(
+            DrillSignal(
+                "untriaged_secret_alerts",
+                1.0,
+                0.0,
+                "max",
+                "injected key false-positive alert; gate must wait for triage",
+            )
+        )
+    elif normalized == "rollback_failed":
+        signals.append(
+            DrillSignal(
+                "rollback_verified",
+                0.0,
+                1.0,
+                "min",
+                "injected rollback failure; gate must not widen without recovery",
+            )
+        )
+    else:
+        raise ValueError(f"unsupported release drill failure injection: {case!r}")
+    
+    return tuple(signals)
+
+
+def run_failure_injection_drills(
+    canary_percent: float = 1.0,
+) -> dict[str, RolloutDecision]:
+    """Exercise the releasegate against the three required bad-shell cases."""
+    
+    cases = ("evidence_expired", "key_false_positive", "rollback_failed")
+    return {
+        case: decide_releasegate(injected_failure_signals(case), canary_percent=canary_percent)
+        for case in cases
+    }
+
+
 def decide_releasegate(
     signals: Iterable[DrillSignal],
     canary_percent: float = 1.0,
@@ -183,4 +247,6 @@ __all__ = [
     "build_release_drill_plan",
     "decide_releasegate",
     "default_low_risk_signals",
+    "injected_failure_signals",
+    "run_failure_injection_drills",
 ]
