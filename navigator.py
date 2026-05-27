@@ -59,6 +59,14 @@ _SKIP = set()
 
 _HELP_TIMEOUT = 30  # 单扇门 --help 的超时；正常远小于此，超了多半是 import 期卡死
 
+_STALE_DAYS = 30  # 本机 pyc 心跳超过这个天数，就当作「久未跑」入口提醒复验
+_RECHECK_LIMIT = 8  # 最小复验队列只给最值得先敲的几扇门，避免又变成大清单
+_HIGH_VALUE = {
+    "crab", "navigator", "compass", "smoke", "checkup", "health", "audit",
+    "evidence", "evidence_freshness", "planner", "triage", "releasegate",
+    "rollback", "regression", "policy", "privacy", "secretscan", "supplychain",
+}
+
 
 @dataclasses.dataclass
 class Entry:
@@ -74,6 +82,12 @@ class Entry:
     detail: str = ""        # 失效时的关键错误行
     elapsed_s: float = 0.0
 
+    # 新鲜度巡航：不写状态，只读 __pycache__ 心跳与源码时间来判断「有没有久未被本机跑过」
+    last_seen_days: int | None = None
+    freshness: str = "unknown"   # fresh / stale / never-seen
+    high_value: bool = False
+    recheck_reason: str = ""
+
     def to_meta(self) -> dict:
         return {
             "name": self.name,
@@ -84,6 +98,10 @@ class Entry:
             "alive": self.alive,
             "detail": self.detail if self.alive is False else "",
             "elapsed_s": round(self.elapsed_s, 2),
+            "last_seen_days": self.last_seen_days,
+            "freshness": self.freshness,
+            "high_value": self.high_value,
+            "recheck_reason": self.recheck_reason,
         }
 
 
@@ -139,6 +157,32 @@ def _docstring_parts(doc: str) -> tuple[str, list[str]]:
     return summary, examples
 
 
+def _freshness_for(path: pathlib.Path) -> tuple[int | None, str]:
+    """只读估算入口新鲜度：优先看 __pycache__ 心跳；没有 pyc 就标成 never-seen。
+
+    这不是审计日志，不声称精确记录「最后一次人工执行」；它只回答一个更朴素的问题：
+    本机最近有没有留下过 import/run 过这扇门的痕迹。导航台随后会真的跑 --help，因此这里
+    必须在 probe 之前完成，避免被本次巡航刷新心跳。
+    """
+    cache_dir = path.with_name("__pycache__")
+    pyc_times = [p.stat().st_mtime for p in cache_dir.glob(f"{path.stem}.*.pyc")] if cache_dir.exists() else []
+    if not pyc_times:
+        return None, "never-seen"
+    days = int((time.time() - max(pyc_times)) // 86400)
+    return days, ("stale" if days >= _STALE_DAYS else "fresh")
+
+
+def _recheck_reason(name: str, freshness: str, high_value: bool) -> str:
+    reasons: list[str] = []
+    if high_value:
+        reasons.append("高价值入口")
+    if freshness == "never-seen":
+        reasons.append("本机未见跑过")
+    elif freshness == "stale":
+        reasons.append(f"久未跑(≥{_STALE_DAYS}天)")
+    return "；".join(reasons)
+
+
 def discover() -> list[Entry]:
     """扫描根目录所有可执行入口，连同自述、示例、验证命令——但不测活。"""
     entries: list[Entry] = []
@@ -154,12 +198,18 @@ def discover() -> list[Entry]:
         if not _has_main(tree):
             continue
         summary, examples = _docstring_parts(ast.get_docstring(tree) or "")
+        last_seen_days, freshness = _freshness_for(p)
+        high_value = stem in _HIGH_VALUE
         entries.append(Entry(
             name=stem,
             path=p.name,
             summary=summary or "（无自述）",
             examples=examples,
             verify=f"python {p.name} --help",
+            last_seen_days=last_seen_days,
+            freshness=freshness,
+            high_value=high_value,
+            recheck_reason=_recheck_reason(stem, freshness, high_value),
         ))
     return entries
 
@@ -216,8 +266,37 @@ def manifest(grep: str | None = None) -> dict:
         "alive": sum(1 for e in entries if e.alive),
         "dead": len(dead),
         "dead_names": [e.name for e in dead],
+        "stale_or_never_seen": [e.name for e in entries if e.freshness in {"stale", "never-seen"}],
+        "high_value": [e.name for e in entries if e.high_value],
+        "recheck_queue": [e.to_meta() for e in _recheck_queue(entries)],
         "entries": [e.to_meta() for e in entries],
     }
+
+
+def _recheck_queue(entries: list[Entry]) -> list[Entry]:
+    """最小复验队列：失效优先，其次高价值且不新鲜，再其次普通不新鲜。"""
+    def score(e: Entry) -> tuple[int, int, int, str]:
+        dead = 0 if e.alive is False else 1
+        valuable = 0 if e.high_value else 1
+        stale_rank = 0 if e.freshness == "never-seen" else (1 if e.freshness == "stale" else 2)
+        return (dead, valuable, stale_rank, e.name)
+
+    needs = [
+        e for e in entries
+        if e.alive is False or e.freshness in {"stale", "never-seen"} or e.high_value
+    ]
+    return sorted(needs, key=score)[:_RECHECK_LIMIT]
+
+
+def _freshness_badge(e: Entry) -> str:
+    bits: list[str] = []
+    if e.high_value:
+        bits.append("⭐高价值")
+    if e.freshness == "never-seen":
+        bits.append("🕳️未见跑过")
+    elif e.freshness == "stale":
+        bits.append(f"⏳久未跑 {e.last_seen_days}天")
+    return " ".join(bits)
 
 
 def _render(entries: list[Entry], probed: bool) -> str:
@@ -228,7 +307,9 @@ def _render(entries: list[Entry], probed: bool) -> str:
             mark = "•"
         else:
             mark = "✅" if e.alive else "❌"
-        L.append(f"{mark} {e.name}.py — {e.summary}")
+        badge = _freshness_badge(e)
+        suffix = f"  [{badge}]" if badge else ""
+        L.append(f"{mark} {e.name}.py — {e.summary}{suffix}")
         if e.examples:
             for ex in e.examples:
                 L.append(f"     ↳ {ex}")
@@ -244,6 +325,16 @@ def _render(entries: list[Entry], probed: bool) -> str:
             L.append(f"🦀 {len(entries)} 个入口全部健在，门门推得开。")
     else:
         L.append(f"📇 共 {len(entries)} 个入口（未测活；去掉 --list 可逐个验证存活）。")
+
+    queue = _recheck_queue(entries)
+    if queue:
+        L.append("")
+        L.append(f"🧭 最小复验队列（先敲这 {len(queue)} 扇门，校正旧地图）：")
+        for e in queue:
+            reason = e.recheck_reason or ("失效入口" if e.alive is False else "抽样复验")
+            if e.alive is False and "失效入口" not in reason:
+                reason = "失效入口；" + reason
+            L.append(f"   - {e.verify}  # {reason}")
     return "\n".join(L)
 
 
