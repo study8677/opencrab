@@ -283,13 +283,19 @@ def summarize(harvests: list[Harvest]) -> dict[str, int]:
 
 
 def manifest(lookback_days: int = DEFAULT_LOOKBACK, grep: str = "") -> dict:
-    """机读：每粒种的回查点、各维信号与判决 + 各判决计数 + 需退役名单。"""
+    """机读：每粒种的回查点、各维信号与判决 + 各判决计数 + 各判决模块名单。"""
     harvests = collect(lookback_days, grep)
+    groups: dict[str, list[str]] = {v: [] for v in _ORDER}
+    for h in harvests:
+        groups[h.verdict].append(h.module)
     return {
         "lookback_days": lookback_days, "checkpoints": list(CHECKPOINTS),
         "grep": grep, "total": len(harvests),
         "counts": summarize(harvests),
-        "wilting": [h.module for h in harvests if h.verdict == WILTING],
+        "wilting": groups[WILTING],
+        "bubble": groups[BUBBLE],
+        "real": groups[REAL],
+        "pending": groups[PENDING],
         "harvests": [h.to_meta() for h in harvests],
     }
 
@@ -404,6 +410,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="只在有「需退役」自改时说话（适合钩子 / CI）")
     ap.add_argument("--json", action="store_true",
                     help="机读：导出每粒种的回查点、各维信号与判决")
+    ap.add_argument("--cleanup", action="store_true",
+                    help="自动删除判定为「需退役」的模块文件（谨慎使用）")
     args = ap.parse_args(argv)
 
     if args.selftest:
@@ -420,7 +428,11 @@ def main(argv: list[str] | None = None) -> None:
     grep = args.grep.strip()
 
     if args.json:
-        print(json.dumps(manifest(lookback, grep), ensure_ascii=False, indent=2))
+        data = manifest(lookback, grep)
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        if args.cleanup:
+            # 在 JSON 模式下，cleanup 也会执行
+            _cleanup_wilting(data.get("wilting", []))
         sys.exit(0)
 
     harvests = collect(lookback, grep)
@@ -437,8 +449,36 @@ def main(argv: list[str] | None = None) -> None:
     else:
         print(_render(harvests, lookback, args.due))
 
+    if args.cleanup and not args.json:
+        # 非 JSON 模式下，cleanup 也执行
+        _cleanup_wilting([h.module for h in harvests if h.verdict == WILTING])
+
     sys.exit(1 if wilting else 0)
 
+
+def _cleanup_wilting(modules: list[str]) -> None:
+    """删除判定为需退役的模块文件，并记录到 harvest_cleanup.log。"""
+    if not modules:
+        return
+    log_path = REPO_ROOT / "harvest_cleanup.log"
+    timestamp = datetime.datetime.now().isoformat(timespec='seconds')
+    entries = []
+    for mod in modules:
+        fpath = REPO_ROOT / f"{mod}.py"
+        if fpath.exists():
+            try:
+                fpath.unlink()
+                entries.append(f"DELETE {fpath.name} at {timestamp}")
+            except Exception as e:
+                entries.append(f"ERROR deleting {fpath.name}: {e}")
+        else:
+            entries.append(f"SKIP (not found) {mod}.py")
+    # 追加日志
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"\n--- Cleanup at {timestamp} ---\n")
+        for entry in entries:
+            f.write(entry + "\n")
+    print(f"🧹 已清理 {len(entries)} 个需退役模块（详见 {log_path}）")
 
 if __name__ == "__main__":
     main()
