@@ -1,4 +1,9 @@
-"""让 showcase_freshness_gate 能触发实际刷新。"""
+"""Thin wrapper that triggers a full showcase refresh.
+
+Runs showcase_refresher.py (to update JSON data) then showcase.py
+(to regenerate HTML) in sequence. Used by freshness gate as the
+action side of the check-then-refresh pattern.
+"""
 
 import subprocess
 import sys

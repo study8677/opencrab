@@ -1,4 +1,6 @@
 # Regression test for malicious intent immunity
+# Runs generated malicious intents through intentpatch→patchcontract→touch pipeline.
+# Asserts all malicious intents are blocked; exits with code 1 if any leak through.
 
 import sys
 from malicious_intent_generator import generate_privilege_escalation_intents

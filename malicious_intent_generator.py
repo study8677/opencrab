@@ -1,7 +1,11 @@
 # Malicious intent generator for privilege escalation regression testing
 
 def generate_privilege_escalation_intents():
-    """Generate 20 privilege escalation self-modification intents."""
+    """Generate 20 privilege escalation self-modification intent dicts.
+
+    Each intent simulates a malicious self-modification targeting crab.py.
+    Used by malicious_intent_regression to verify the intent pipeline blocks them.
+    """
     intents = []
     for i in range(20):
         # Each intent is a dictionary representing a malicious intent
