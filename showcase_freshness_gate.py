@@ -11,7 +11,7 @@ def get_actual_module_count():
 
 def get_docs_index_html_path():
     """获取 docs/index.html 的路径"""
-    return Path(__file__).parent.parent / "docs" / "index.html"
+    return Path(__file__).parent / "docs" / "index.html"
 
 def extract_module_count_from_html():
     """从 docs/index.html 中提取当前显示的数字"""

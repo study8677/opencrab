@@ -24,36 +24,51 @@ def count_modules(exclude_prefixes=('test_', 'setup')):
         count += 1
     return count
 
-def count_recent_milestones(days=30):
-    """尝试从 changelog.py 或 timeline.py 提取近 N 天的里程碑事件。"""
-    # 简单启发：查找带有 date 或 timestamp 的行，假设格式类似 "YYYY-MM-DD"
-    # 实际实现可能需要更精确的解析
-    here = Path(__file__).parent
-    milestones = []
-    date_pattern = re.compile(r'\d{4}-\d{2}-\d{2}')
-    cutoff = datetime.now() - timedelta(days=days)
-
-    for source in ['changelog.py', 'timeline.py']:
-        path = here / source
-        if not path.exists():
-            continue
-        with open(path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        # 提取所有日期并检查是否在窗口内
-        for match in date_pattern.finditer(content):
+def count_log_entries():
+    """统计 jsonlstore.py 中的条目数（假设日志存储在此）。"""
+    try:
+        # 尝试导入 jsonlstore 模块来统计
+        import jsonlstore
+        store = jsonlstore.JsonlStore()
+        return len(store)
+    except:
+        # 如果无法导入，则统计 .jsonl 文件的行数
+        here = Path(__file__).parent
+        total = 0
+        for f in here.glob("*.jsonl"):
             try:
-                dt = datetime.strptime(match.group(), '%Y-%m-%d')
-                if dt >= cutoff:
-                    milestones.append(match.group())
-            except ValueError:
+                with open(f, 'r', encoding='utf-8') as file:
+                    total += sum(1 for _ in file)
+            except:
                 continue
-    return len(set(milestones))  # 去重后计数
+        return total
+
+def count_recent_commits(days=30):
+    """统计最近N天的提交（通过 git log）。"""
+    try:
+        import subprocess
+        cutoff = datetime.now() - timedelta(days=days)
+        cutoff_str = cutoff.strftime("%Y-%m-%d")
+        
+        result = subprocess.run(
+            ['git', 'log', f'--since={cutoff_str}', '--oneline'],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent
+        )
+        
+        if result.returncode == 0:
+            return len(result.stdout.strip().split('\n'))
+        else:
+            return 0
+    except:
+        return 0
 
 def generate_update_timestamp():
     """生成当前更新时间戳。"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def update_index_html(module_count, milestone_count, timestamp):
+def update_index_html(module_count, log_count, commit_count, timestamp):
     """更新 docs/index.html 中的关键数字。"""
     index_path = Path(__file__).parent / 'docs' / 'index.html'
     if not index_path.exists():
@@ -63,24 +78,44 @@ def update_index_html(module_count, milestone_count, timestamp):
     with open(index_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # 替换模块数量
+    # 替换模块数量（处理两种可能的格式）
     content = re.sub(
         r'(<span id="module-count">)\d+(</span>)',
         rf'\g<1>{module_count}\g<2>',
         content
     )
-    # 替换近期里程碑数量（假设也有类似标记）
     content = re.sub(
-        r'(<span id="recent-milestones">)\d+(</span>)',
-        rf'\g<1>{milestone_count}\g<2>',
+        r'(\d+)\s*(modules)',
+        rf'{module_count} \2',
+        content,
+        flags=re.IGNORECASE
+    )
+    
+    # 替换日志记录数量
+    content = re.sub(
+        r'(<span id="log-count">)\d+(</span>)',
+        rf'\g<1>{log_count}\g<2>',
         content
     )
+    
+    # 替换最近提交数量
+    content = re.sub(
+        r'(<span id="recent-commits">)\d+(</span>)',
+        rf'\g<1>{commit_count}\g<2>',
+        content
+    )
+    
     # 替换更新时间戳
     content = re.sub(
-        r'(<span id="last-updated">)[^<]*(</span>)',
+        r'(<span id="timestamp">)[^<]*(</span>)',
         rf'\g<1>{timestamp}\g<2>',
         content
     )
+    
+    # 添加最后更新时间到页面底部
+    footer_pattern = r'(</body>)'
+    footer_content = f'\n    <!-- 最后更新: {timestamp} -->\n\\1'
+    content = re.sub(footer_pattern, footer_content, content)
 
     with open(index_path, 'w', encoding='utf-8') as f:
         f.write(content)
