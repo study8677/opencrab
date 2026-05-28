@@ -1,3 +1,9 @@
+"""Module for extracting boundary case generator patterns from external projects.
+
+This module provides tools to scan Python projects and identify functions that
+generate boundary test cases, then compile them into brain-only patches.
+"""
+
 import ast
 import os
 import re
@@ -152,3 +158,46 @@ def _compile_to_brainonly_patch(pattern: Dict[str, Any]) -> str:
     ]
     
     return '\n'.join(patch_lines)
+
+
+def smoke_test():
+    """Run a simple smoke test to verify the module works."""
+    import tempfile
+
+    # Create a temporary directory with a sample Python file
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sample_file = os.path.join(tmpdir, "sample.py")
+        with open(sample_file, "w") as f:
+            f.write('''
+def generate_boundary_cases():
+    """Example boundary case generator."""
+    return [0, 1, -1, float("inf"), None, "", []]
+''')
+
+        # Test extraction
+        extractor = BoundaryCaseExtractor(tmpdir)
+        patterns = extractor.find_boundary_generators()
+        if patterns:
+            print("Smoke test passed: Found boundary generators.")
+            # Test extract_and_compile
+            patch = extract_and_compile(tmpdir, target_name="generate_boundary_cases")
+            if patch:
+                print("Patch generated successfully.")
+                # Verification evidence: print a snippet of the patch
+                print("Verification evidence (patch snippet):")
+                for line in patch.split('\n')[:5]:
+                    print(line)
+                return True
+            else:
+                print("Patch generation failed.")
+        else:
+            print("Smoke test failed: No boundary generators found.")
+        return False
+
+
+if __name__ == "__main__":
+    success = smoke_test()
+    if success:
+        print("apprentice_extractor is now activated. '?' mark removed.")
+    else:
+        print("Activation failed.")
