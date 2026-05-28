@@ -32,3 +32,9 @@ def add_heartbeat_tasks(tasks):
         'desc': '橱窗数字自动同步',
         'interval': 3600,
     })
+    tasks.append({
+        'module': 'showcase_refresher',
+        'func_name': 'update_showcase',
+        'desc': '橱窗模块计数刷新',
+        'interval': 3600,
+    })
