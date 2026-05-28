@@ -1,5 +1,10 @@
 class AntiPatternCard:
-    """反模式卡：记录反复出现的失败模式"""
+    """Failure-pattern-tracking data class for recording recurring failure modes.
+
+    Stores a pattern name, frequency count, description, and tags.
+    Supports dict serialization, pattern matching, and frequency incrementing.
+    Used by failure analysis systems to identify repeated anti-patterns.
+    """
     
     def __init__(self, pattern, frequency, description="", tags=None):
         self.pattern = pattern
