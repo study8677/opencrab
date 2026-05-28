@@ -17,8 +17,19 @@ def load_training_data():
             data = json.load(f)
         return data
     except FileNotFoundError:
-        print("Error: eval_for_training.json not found. Run 'python run_full_golden_eval.py' first.")
-        sys.exit(1)
+        print("Error: eval_for_training.json not found. Running evaluation first...")
+        # Import and run evaluation
+        try:
+            from run_full_golden_eval import run_evaluation
+            data = run_evaluation()
+            if data is None:
+                print("Evaluation failed. Cannot proceed.")
+                sys.exit(1)
+            return data
+        except Exception as e:
+            print(f"Failed to run evaluation: {e}")
+            print("Please run 'python run_full_golden_eval.py' first.")
+            sys.exit(1)
 
 def generate_scenarios_for_weakness(weakness_info):
     """Generate training scenarios for a weak category using scenarioforge."""
