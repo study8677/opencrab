@@ -45,15 +45,24 @@ def generate_scenarios_for_weakness(weakness_info):
             return scenarios
         else:
             print("Warning: scenarioforge.generate_scenarios not found, using dummy scenarios.")
-            # Dummy fallback: create simple scenarios based on category
+            # Dummy fallback: create scenarios based on category and tasks, with adaptive details
             scenarios = []
+            current_score = weakness_info.get("current_score", 0)
+            # Determine number of scenarios per task based on current score
+            # Lower score means more practice needed
+            base_scenarios = 3
+            additional = max(0, int((0.8 - current_score) * 10))  # e.g., if score 0.5, add 3 scenarios
+            num_per_task = base_scenarios + additional
             for task_name, _ in weakness_info["tasks"]:
-                scenarios.append({
-                    "type": "practice",
-                    "category": weakness_info["category"],
-                    "task_name": task_name,
-                    "drill_type": "focused_review"
-                })
+                for i in range(num_per_task):
+                    scenarios.append({
+                        "type": "practice",
+                        "category": weakness_info["category"],
+                        "task_name": task_name,
+                        "drill_type": "focused_review",
+                        "difficulty": "hard" if current_score < 0.6 else "medium",
+                        "session": i + 1
+                    })
             return scenarios
     except ImportError:
         print("Error: Could not import scenarioforge.")
