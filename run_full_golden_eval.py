@@ -27,12 +27,13 @@ def categorize_task(task_name: str) -> str:
         return 'common_sense'
     return 'other'
 
-def main():
+def run_evaluation():
+    """Run full evaluation and return results for external use."""
     # Load golden tasks
     golden_tasks = GoldenVariant.get_all_tasks()
     if not golden_tasks:
         print("No golden tasks found!")
-        sys.exit(1)
+        return None
 
     # Initialize evaluator with golden tasks
     evaluator = EvalBench(tasks=golden_tasks)
@@ -42,18 +43,20 @@ def main():
 
     # Group scores by category
     category_scores = defaultdict(list)
+    category_tasks = defaultdict(list)
     for task in golden_tasks:
         task_name = task.get('task_name', task.get('name', str(task)))
         category = categorize_task(task_name)
         score = results.get(task_name, {}).get('score', 0)
         category_scores[category].append(score)
+        category_tasks[category].append(task_name)
 
     # Print summary
     print("=== Baseline Evaluation Results ===")
     total_score = 0
     num_tasks = 0
     category_means = {}
-    
+
     # Print per-task scores
     for task_name, result in results.items():
         score = result.get('score', 0)
@@ -63,22 +66,23 @@ def main():
 
     average_score = total_score / num_tasks if num_tasks > 0 else 0
     print(f"\nAverage Score: {average_score:.3f}")
-    
+
     # Print per-category scores
     print("\n=== Scores by Category ===")
     for cat, scores in sorted(category_scores.items()):
         cat_mean = sum(scores) / len(scores) if scores else 0
         category_means[cat] = cat_mean
         print(f"{cat}: {cat_mean:.3f} ({len(scores)} tasks)")
-    
+
     # Identify weakest 3 categories
+    weakest_cats = []
     if category_means:
         sorted_cats = sorted(category_means.items(), key=lambda x: x[1])
         weakest_cats = sorted_cats[:3]
         print("\n=== Weakest 3 Directions ===")
         for cat, score in weakest_cats:
             print(f"{cat}: {score:.3f}")
-        
+
         # Save weakest directions for next evolution cycle
         with open("weakest_directions.json", "w") as f:
             json.dump({
@@ -92,6 +96,31 @@ def main():
     with open("baseline_results.json", "w") as f:
         json.dump(results, f, indent=2)
     print("Detailed results saved to baseline_results.json")
+
+    # Save training data for train_weakness.py
+    training_data = {
+        "weakest_directions": weakest_cats,
+        "category_details": {
+            cat: {
+                "mean": category_means.get(cat, 0),
+                "tasks": category_tasks.get(cat, []),
+                "scores": category_scores.get(cat, [])
+            }
+            for cat in category_means.keys()
+        },
+        "all_category_means": category_means,
+        "overall_average": average_score,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+    
+    with open("eval_for_training.json", "w") as f:
+        json.dump(training_data, f, indent=2)
+    print("Training data saved to eval_for_training.json")
+
+    return training_data
+
+def main():
+    run_evaluation()
 
 if __name__ == "__main__":
     main()
