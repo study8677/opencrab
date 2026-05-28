@@ -26,3 +26,9 @@ def add_heartbeat_tasks(tasks):
         'desc': '证据批量续期',
         'interval': 3600,
     })
+    tasks.append({
+        'module': 'sync_docs_numbers',
+        'func_name': 'update_html',
+        'desc': '橱窗数字自动同步',
+        'interval': 3600,
+    })
