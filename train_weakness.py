@@ -7,6 +7,7 @@ run training, then re-evaluate to see improvement.
 import sys
 import json
 import importlib
+import subprocess
 from pathlib import Path
 
 def load_training_data():
