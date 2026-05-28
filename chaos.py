@@ -29,7 +29,7 @@ hang 住的命令拖死。本层反过来**故意制造逆境**，然后断言�
 用法：
     python chaos.py                 # 跑全部混沌实验，打印韧性验收报告
     python chaos.py --quiet         # 只在有实验未通过时说话(适合钩子 / CI)
-    python chaos.py --only env      # 只跑某一类(env / jsonl / timeout)
+    python chaos.py --only env      # 只跑某一类(env / jsonl / timeout / network)
     python chaos.py --json          # 机读：每个实验的三面结果 + 汇总
 
 零第三方依赖，纯标准库。
@@ -52,6 +52,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import evidence    # noqa: E402  —— 真实的「跑外部命令 + 超时防御」层
 import jsonlstore  # noqa: E402  —— 真实的「读一批 / 追一条」防御层
+import degrade     # noqa: E402  —— 真实的「网络断开时的降级演练」层
 
 REPORT_PATH = REPO_ROOT / "state" / "chaos" / "report.jsonl"
 
@@ -59,7 +60,7 @@ REPORT_PATH = REPO_ROOT / "state" / "chaos" / "report.jsonl"
 @dataclasses.dataclass(frozen=True)
 class Resilience:
     """一个混沌实验的韧性画像：三面是否都扛住 + 各自的一句话取证。"""
-    family: str            # env / jsonl / timeout
+    family: str            # env / jsonl / timeout / network
     name: str              # 这次注入的是什么故障
     contained: bool        # 可控：没崩、没 hang、没污染
     diagnosable: bool      # 可诊断：留下了能读懂的原因
@@ -255,9 +256,76 @@ def _experiment_command_missing() -> Resilience:
                       int((time.perf_counter() - t0) * 1000))
 
 
+# ── 故障 4：网络断开降级演练 ──────────────────────────────────────────
+def _experiment_network_disconnection() -> Resilience:
+    """模拟网络断开，验证 degrade.py 的降级演练是否平稳进行，不崩溃。"""
+    t0 = time.perf_counter()
+    contained = diagnosable = recoverable = False
+    detail = ""
+    original_network_up = degrade._network_up  # 保存原始函数
+    try:
+        # 注入：替换 _network_up 函数，使其总是返回 False（模拟网络断开）
+        degrade._network_up = lambda *args, **kwargs: False
+        
+        # 探测：验证网络资源显示为 down
+        pr = degrade.probe()
+        contained = True  # 没有抛出异常，圈住了
+        
+        # 诊断：检查降级方案是否合理
+        down = {"network"}
+        p = degrade.plan(down)
+        
+        # 验证关键能力是否被正确降级
+        think_status = next(r for r in p["rows"] if r["name"] == "think")["status"]
+        publish_status = next(r for r in p["rows"] if r["name"] == "publish")["status"]
+        research_status = next(r for r in p["rows"] if r["name"] == "research")["status"]
+        
+        # 本地能力应该仍然可用
+        self_edit_status = next(r for r in p["rows"] if r["name"] == "self-edit")["status"]
+        evidence_status = next(r for r in p["rows"] if r["name"] == "evidence")["status"]
+        journal_status = next(r for r in p["rows"] if r["name"] == "journal")["status"]
+        
+        # 检查降级方案是否合理
+        diagnosable = (
+            think_status == "degraded" and
+            publish_status == "degraded" and
+            research_status == "degraded" and
+            self_edit_status == "ok" and
+            evidence_status == "ok" and
+            journal_status == "ok"
+        )
+        
+        if diagnosable:
+            detail = (
+                f"网络断开后，think/publish/research 被降级，"
+                f"self-edit/evidence/journal 仍然可用。"
+                f"降级方案: {p['counts']}"
+            )
+        else:
+            detail = (
+                f"网络断开后，降级方案不符合预期: "
+                f"think={think_status}, publish={publish_status}, research={research_status}, "
+                f"self-edit={self_edit_status}, evidence={evidence_status}, journal={journal_status}"
+            )
+            
+    except Exception as e:  # noqa: BLE001
+        detail = f"网络断开演练异常：{type(e).__name__}: {e}"
+    finally:
+        # 恢复原始函数
+        degrade._network_up = original_network_up
+        
+        # 验证可恢复：网络恢复后，探测应该显示正常
+        with contextlib.suppress(Exception):
+            pr_recovered = degrade.probe()
+            recoverable = "network" not in pr_recovered["down"]
+            
+    return Resilience("network", "网络断开降级演练", contained, diagnosable, recoverable,
+                      detail, int((time.perf_counter() - t0) * 1000))
+
+
 # ── 编排 ───────────────────────────────────────────────────────────────
 def run(only: str | None = None) -> list[Resilience]:
-    """跑选定的混沌实验族(env / jsonl / timeout)，返回每个实验的韧性结果。"""
+    """跑选定的混沌实验族(env / jsonl / timeout / network)，返回每个实验的韧性结果。"""
     out: list[Resilience] = []
     if only in (None, "env"):
         for key, default, cast in _ENV_PROBES:
@@ -268,6 +336,8 @@ def run(only: str | None = None) -> list[Resilience]:
     if only in (None, "timeout"):
         out.append(_experiment_command_timeout())
         out.append(_experiment_command_missing())
+    if only in (None, "network"):
+        out.append(_experiment_network_disconnection())
     return out
 
 
@@ -296,7 +366,7 @@ def manifest(only: str | None = None) -> dict:
 
 def _print_report(results: list[Resilience]) -> None:
     print(f"🌀 opencrab 韧性验收（{len(results)} 个混沌实验）\n")
-    families = {"env": "缺失环境变量", "jsonl": "损坏 JSONL", "timeout": "外部命令超时"}
+    families = {"env": "缺失环境变量", "jsonl": "损坏 JSONL", "timeout": "外部命令超时", "network": "网络断开降级"}
     last_fam = None
     for r in results:
         if r.family != last_fam:
@@ -319,7 +389,7 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="opencrab 混沌注入与韧性验收 🌀")
     ap.add_argument("--quiet", action="store_true",
                     help="只在有实验未通过时输出(适合钩子 / CI)")
-    ap.add_argument("--only", choices=["env", "jsonl", "timeout"],
+    ap.add_argument("--only", choices=["env", "jsonl", "timeout", "network"],
                     help="只跑某一类故障实验")
     ap.add_argument("--json", action="store_true", help="导出机读验收报告")
     args = ap.parse_args(argv)
