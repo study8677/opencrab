@@ -7,6 +7,7 @@ Enhanced: group by category and identify weakest 3 directions.
 
 import sys
 import json
+import datetime
 from collections import defaultdict
 from evalbench import EvalBench
 from evalbench_golden_variant import GoldenVariant
