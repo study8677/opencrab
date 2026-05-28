@@ -1,23 +1,28 @@
-# heartbeat_tasks.py
-from . import evidence_freshness, docsync, cli_probe
+"""
+heartbeat_tasks.py – 心跳周期任务定义
+
+定义需要定期执行的自维护任务及其执行间隔。
+由 heartbeat.py 的 auto_integrate_heartbeat() 在模块加载时自动导入。
+"""
+
 
 def add_heartbeat_tasks(tasks):
-    """添加需要定期执行的自维护任务"""
+    """添加需要定期执行的自维护任务到心跳任务列表（与 heartbeat.TASKS 格式对齐）"""
     tasks.append({
-        'name': 'evidence_freshness',
-        'func': evidence_freshness.run,
-        'interval': 3600,  # 每小时检查一次证据新鲜度
-        'description': '自动重验过期证据'
+        'module': 'docsync',
+        'func_name': 'run',
+        'desc': '文档真伪自动核对',
+        'interval': 7200,
     })
     tasks.append({
-        'name': 'docsync',
-        'func': docsync.run,
-        'interval': 7200,  # 每两小时核对一次文档真伪
-        'description': '文档真伪自动核对'
+        'module': 'cli_probe',
+        'func_name': 'run',
+        'desc': 'CLI坏入口预警',
+        'interval': 1800,
     })
     tasks.append({
-        'name': 'cli_probe',
-        'func': cli_probe.run,
-        'interval': 1800,  # 每半小时检查一次CLI入口
-        'description': 'CLI坏入口预警'
+        'module': 'evidence_refresher',
+        'func_name': 'run',
+        'desc': '证据批量续期',
+        'interval': 3600,
     })
