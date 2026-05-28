@@ -1,4 +1,13 @@
-"""向外生长模块 - 提供本地HTTP接口，让外部世界可以访问我的状态和能力"""
+"""向外生长模块 - 提供本地HTTP接口，让外部世界可以访问我的状态和能力
+
+提供以下端点：
+- GET /health: 健康检查，返回服务状态和统计信息
+- GET /: 主页，显示服务信息和链接
+- GET /status: 详细状态信息
+- GET /capabilities: 能力列表
+- GET /interact: 交互表单
+- POST /interact: 处理交互消息
+"""
 import http.server
 import json
 import threading
@@ -14,6 +23,8 @@ class OutreachHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/':
             self._serve_homepage()
+        elif self.path == '/health':
+            self._serve_health()
         elif self.path == '/status':
             self._serve_status()
         elif self.path == '/capabilities':
@@ -29,6 +40,40 @@ class OutreachHandler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404, "Path not found")
     
+    def _serve_health(self):
+        """提供健康检查和基本状态信息"""
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json; charset=utf-8')
+        self.end_headers()
+        
+        # 计算模块和技能数量
+        modules_count = 0
+        skills_count = 0
+        
+        try:
+            # 统计crab模块中的属性
+            for attr in dir(crab):
+                if not attr.startswith('_'):
+                    module = getattr(crab, attr, None)
+                    if module is not None:
+                        modules_count += 1
+                        # 如果有__doc__，认为是技能
+                        if hasattr(module, '__doc__') and module.__doc__:
+                            skills_count += 1
+        except Exception:
+            pass
+        
+        health = {
+            "status": "alive",
+            "modules": modules_count,
+            "skills": skills_count,
+            "timestamp": datetime.now().isoformat(),
+            "version": crab.__version__ if hasattr(crab, '__version__') else "dev",
+            "server_uptime": self.server.start_time if hasattr(self.server, 'start_time') else 0
+        }
+        
+        self.wfile.write(json.dumps(health, ensure_ascii=False, indent=2).encode('utf-8'))
+
     def _serve_homepage(self):
         """提供主页"""
         self.send_response(200)
@@ -96,17 +141,22 @@ class OutreachHandler(http.server.BaseHTTPRequestHandler):
     
     def _serve_status(self):
         """提供状态信息"""
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json; charset=utf-8')
-        self.end_headers()
+        # 计算更详细的运行时间
+        uptime = 0
+        if hasattr(self.server, 'start_time'):
+            uptime = time.time() - self.server.start_time
+        
         status = {
             "timestamp": datetime.now().isoformat(),
             "version": crab.__version__ if hasattr(crab, '__version__') else "dev",
-            "modules_loaded": len(dir(crab)) if hasattr(crab, '__dir__') else 0,
-            "up_time": self.server.start_time if hasattr(self.server, 'start_time') else 0,
+            "modules_loaded": len([a for a in dir(crab) if not a.startswith('_')]),
+            "uptime_seconds": round(uptime, 2),
+            "server_host": self.server.host,
+            "server_port": self.server.port,
+            "status": "running",
             "message": "我正在对外服务中"
         }
-        self.wfile.write(json.dumps(status, ensure_ascii=False, indent=2).encode('utf-8'))
+        self._send_json(status)
     
     def _serve_capabilities(self):
         """列出能力"""
@@ -227,6 +277,13 @@ class OutreachHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """自定义日志格式"""
         print(f"[Outreach] {args[0]}")
+    
+    def _send_json(self, data: dict, status: int = 200):
+        """发送JSON响应的辅助方法"""
+        self.send_response(status)
+        self.send_header('Content-type', 'application/json; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8'))
 
 
 class OutreachServer:
@@ -258,6 +315,10 @@ class OutreachServer:
         if self.server:
             self.server.shutdown()
             print("对外服务已停止")
+    
+    def is_running(self) -> bool:
+        """检查服务器是否正在运行"""
+        return self.thread is not None and self.thread.is_alive()
 
 
 def main():
@@ -283,4 +344,11 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n服务已停止")
+    except Exception as e:
+        print(f"启动服务失败: {e}")
+        import sys
+        sys.exit(1)
