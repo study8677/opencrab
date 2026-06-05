@@ -209,11 +209,69 @@ _运行耗时: {result.duration_seconds:.1f}s_
     return report
 
 
+def save_state_md(result: BaselineResult) -> Optional[Path]:
+    """保存简明结果到 state/projects/fitness-baseline.md（供 git 追踪和复算）"""
+    state_dir = REPO_ROOT / "state" / "projects"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    md_path = state_dir / "fitness-baseline.md"
+
+    badge = "🟢" if result.pass_rate >= 0.9 else ("🟡" if result.pass_rate >= 0.7 else "🔴")
+    content = f"""# Fitness Baseline — 可复算真锚
+
+> **本文件由 run_fitness_baseline.py 自动生成，git 跟踪，任何「我又进步了」需对照此文件验证。**
+
+## 最新基线
+
+| 字段 | 值 |
+|------|-----|
+| 时间戳 | `{result.timestamp}` |
+| 耗时 | {result.duration_seconds:.1f}s |
+| 通过率 | {badge} {result.pass_rate:.1%} |
+
+## 各维度详情
+
+| 维度 | 通过 | 失败 | 总计 | 通过率 |
+|------|------|------|------|--------|
+| arena | {result.arena_passed} | {result.arena_failed} | {result.arena_total} | {result.arena_passed/max(result.arena_total,1):.1%} |
+| boundaryeval | {result.boundary_passed} | {result.boundary_failed} | {result.boundary_total} | {result.boundary_passed/max(result.boundary_total,1):.1%} |
+| regression | {result.regression_passed} | {result.regression_failed} | {result.regression_total} | {result.regression_passed/max(result.regression_total,1):.1%} |
+| canary | {result.canary_passed} | {result.canary_failed} | {result.canary_total} | {result.canary_passed/max(result.canary_total,1):.1%} |
+
+## 数值快照（机器可读）
+
+```json
+{{
+  "timestamp": "{result.timestamp}",
+  "pass_rate": {result.pass_rate},
+  "total_passed": {result.total_passed},
+  "total_failed": {result.total_failed},
+  "total_tests": {result.total_tests},
+  "duration_seconds": {result.duration_seconds},
+  "arena": {{"passed": {result.arena_passed}, "failed": {result.arena_failed}, "total": {result.arena_total}}},
+  "boundaryeval": {{"passed": {result.boundary_passed}, "failed": {result.boundary_failed}, "total": {result.boundary_total}}},
+  "regression": {{"passed": {result.regression_passed}, "failed": {result.regression_failed}, "total": {result.regression_total}}},
+  "canary": {{"passed": {result.canary_passed}, "failed": {result.canary_failed}, "total": {result.canary_total}}}
+}}
+```
+
+## 复算命令
+
+```bash
+cd {REPO_ROOT}
+python run_fitness_baseline.py --output-md  # 重跑并更新本文件
+```
+"""
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return md_path
+
+
 def main():
     parser = argparse.ArgumentParser(description="真适应度基线评测")
     parser.add_argument("--quick", action="store_true", help="快速 smoke 级别评测")
     parser.add_argument("--modules", nargs="*", help="指定 regression 测试的模块")
     parser.add_argument("--label", default="current", help="基线标签 (用于文件名)")
+    parser.add_argument("--output-md", action="store_true", help="同时写入 state/projects/fitness-baseline.md")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -273,6 +331,11 @@ def main():
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"  → {report_path}")
+
+    # 可选：写入 state/projects/fitness-baseline.md（供 git 追踪真锚）
+    if args.output_md:
+        md_path = save_state_md(result)
+        print(f"  → {md_path} (git 可追踪的真锚)")
 
     # 输出摘要
     print("\n" + "=" * 60)
