@@ -24,6 +24,29 @@ DEFAULT_INTENT = {
 }
 
 
+def _load_zhang():
+    """Load state/项目账.md as the primary project memory (highest priority)."""
+    if not ZHANG_PATH.exists():
+        return []
+
+    try:
+        content = ZHANG_PATH.read_text(encoding="utf-8")
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    data = yaml.safe_load(parts[2].strip())
+                    if data and isinstance(data, dict):
+                        data["_source"] = str(ZHANG_PATH)
+                        data["_is_zhang"] = True
+                        return [data]
+                except yaml.YAMLError:
+                    pass
+        return []
+    except Exception:
+        return []
+
+
 def _load_projects():
     """Load all project .md files from state/projects/*.md"""
     projects = []
