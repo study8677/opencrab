@@ -711,10 +711,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except BrokenPipeError:
-        try:
-            import os
-            import sys
-
-            sys.stdout = open(os.devnull, "w")
-        finally:
-            raise SystemExit(1)
+        raise SystemExit(1)
