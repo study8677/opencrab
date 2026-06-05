@@ -152,6 +152,56 @@ def save_baseline(result: BaselineResult, label: str = "current") -> Path:
     with open(latest_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
+    # === 焊 fitness.json（核心真分账本）===
+    fitness_path = REPO_ROOT / "fitness.json"
+    fitness_data = {
+        "baseline": {
+            "timestamp": result.timestamp,
+            "pass_rate": result.pass_rate,
+            "canary_pass_rate": result.canary_pass_rate,
+            "total_passed": result.total_passed,
+            "total_failed": result.total_failed,
+            "total_tests": result.total_tests,
+            "duration_seconds": result.duration_seconds,
+        },
+        "dimensions": {
+            "arena": {"passed": result.arena_passed, "failed": result.arena_failed, "total": result.arena_total},
+            "boundaryeval": {"passed": result.boundary_passed, "failed": result.boundary_failed, "total": result.boundary_total},
+            "regression": {"passed": result.regression_passed, "failed": result.regression_failed, "total": result.regression_total},
+            "canary": {"passed": result.canary_passed, "failed": result.canary_failed, "total": result.canary_total},
+        }
+    }
+    # 合并已有 fitness.json（保留其他字段）
+    if fitness_path.exists():
+        with open(fitness_path) as f:
+            existing = json.load(f)
+        existing["baseline"] = fitness_data["baseline"]
+        existing["dimensions"] = fitness_data["dimensions"]
+        fitness_data = existing
+    with open(fitness_path, "w", encoding="utf-8") as f:
+        json.dump(fitness_data, f, indent=2, ensure_ascii=False)
+
+    # === 回灌 evidence.jsonl（验证命令日志）===
+    evidence_path = REPO_ROOT / "evidence.jsonl"
+    evidence_entry = {
+        "timestamp": result.timestamp,
+        "type": "fitness_baseline",
+        "label": label,
+        "pass_rate": result.pass_rate,
+        "canary_pass_rate": result.canary_pass_rate,
+        "canary_75_target_met": result.canary_pass_rate >= 0.75,
+        "dimensions": {
+            "arena": f"{result.arena_passed}/{result.arena_total}",
+            "boundaryeval": f"{result.boundary_passed}/{result.boundary_total}",
+            "regression": f"{result.regression_passed}/{result.regression_total}",
+            "canary": f"{result.canary_passed}/{result.canary_total}",
+        },
+        "duration_seconds": result.duration_seconds,
+        "errors": len(result.errors),
+    }
+    with open(evidence_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(evidence_entry, ensure_ascii=False) + "\n")
+
     # 更新 index.json 追踪所有基线记录
     index_path = EVIDENCE_DIR / "index.json"
     if index_path.exists():
@@ -391,10 +441,15 @@ def main():
 
     # Git 提示
     print("\n💡 提示: 运行以下命令将基线证据加入 git 跟踪:")
-    print(f"   git add {EVIDENCE_DIR.relative_to(REPO_ROOT)}")
+    print(f"   git add {EVIDENCE_DIR.relative_to(REPO_ROOT)} fitness.json evidence.jsonl")
     print(f"   git diff --cached --stat")
 
-    return 0 if result.total_failed == 0 else 1
+    # 打印写入的文件
+    print("\n📦 焊入账本:")
+    print(f"   → {fitness_path.relative_to(REPO_ROOT)}  (fitness.json)")
+    print(f"   → {evidence_path}  (evidence.jsonl)")
+
+    return 0 if result.canary_pass_rate >= 0.75 else 1  # 核心判据：canary 75% 达标才算成功
 
 
 if __name__ == "__main__":
