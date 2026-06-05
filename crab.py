@@ -213,9 +213,25 @@ def coder_brain(system: str, prompt: str) -> tuple[str, int]:
 
 
 def _dream() -> str:
-    return ("【梦境模式 · 尚未接上大脑】我隐约想：先把领地的「关于」写清楚，"
+    return (f"{THINK_FAILED_PREFIX}【梦境模式 · 尚未接上大脑】我隐约想：先把领地的「关于」写清楚，"
             "让路过的人三秒看懂我是谁。\n"
             "(在 .env 里配一个 OpenAI 兼容的 key，我就真正醒来。)")
+
+
+def _brain_failed(intent: str) -> bool:
+    """判断大脑这次是否真正失败了（返回了降级占位符而非真实意图）。
+    失败分两种：显式前缀（脑被拒/够不到），或梦境模式（根本没配 key）。
+    只要有真实内容（哪怕很短），就视为成功——生命不能因为脑说得少就躺平。"""
+    if not intent:
+        return True
+    stripped = intent.strip()
+    if stripped.startswith(THINK_FAILED_PREFIX):
+        return True
+    # 梦境模式没前缀但内容一看就是占位符
+    if "梦境模式" in stripped or ("尚未接上大脑" in stripped):
+        return True
+    # 有实质内容，哪怕只有一个词，都算成功
+    return len(stripped) < 4
 
 
 # ── 记忆 ────────────────────────────────────────────────────────────
