@@ -1,22 +1,25 @@
 """
 Intent formation with project memory integration.
-Ensures form_intent checks state/项目账.md and state/projects/*.md before starting new work.
+Ensures form_intent checks state/projects/*.json (项目账本) and state/projects/*.md before starting new work.
 
 Priority order:
-  1. state/项目账.md (项目账——最高优先级，记录跨心跳承诺)
-  2. state/projects/*.md (旧项目文件——兼容)
+  1. state/projects/projects账本.json (项目账本——最高优先级，已存在且被读取)
+  2. state/projects/*.json (其他项目账本JSON)
+  3. state/projects/*.md (旧项目文件——兼容)
 
 Before starting new work, always asks: "续做手上,还是开新?"
 """
 
 import os
 import glob
+import json
 import yaml
 from datetime import datetime
 from pathlib import Path
 
 PROJECTS_DIR = Path("state/projects")
 ZHANG_PATH = Path("state/项目账.md")
+ZHANG_JSON = Path("state/projects/projects账本.json")
 DEFAULT_INTENT = {
     "intent": "Initialize crab evolution",
     "tier": "brainonly",
