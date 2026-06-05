@@ -49,6 +49,59 @@ from jsonlstore import append_jsonl, read_jsonl  # noqa: E402  共用的 JSONL �
 
 STORE = REPO_ROOT / "state" / "intake.jsonl"          # 归一后的需求（单一真相源）
 INBOX = REPO_ROOT / "state" / "intake_inbox.jsonl"    # 外部胶水/工具丢进来的原始信号
+PROJECT_LEDGER = REPO_ROOT / "state" / "projects" / "项目账.md"  # 项目账：记录在跟的大项目
+
+# ── 📋 项目账：支持「跨心跳的自我」—— 一件大事深耕到完成 ──────────────────
+def _read_project_ledger() -> list[dict]:
+    """读取项目账，返回 [{title, goal, keywords, status}, ...]。
+    
+    格式示例：
+    ## 跨心跳自我追踪系统
+    目标：让 intake 能记住在跟的大项目，不换新鲜
+    关键词：心跳, 项目账, 跨心跳
+    状态：进行中
+    """
+    if not PROJECT_LEDGER.exists():
+        return []
+    try:
+        content = PROJECT_LEDGER.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    
+    projects: list[dict] = []
+    current: dict = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if current:
+                projects.append(current)
+            current = {"title": stripped[3:].strip(), "goal": "", "keywords": [], "status": ""}
+        elif stripped.startswith("目标："):
+            current["goal"] = stripped[3:].strip()
+        elif stripped.startswith("关键词："):
+            current["keywords"] = [k.strip() for k in stripped[4:].split(",") if k.strip()]
+        elif stripped.startswith("状态："):
+            current["status"] = stripped[3:].strip()
+    if current:
+        projects.append(current)
+    return projects
+
+
+def _find_project(text: str) -> tuple[str, str]:
+    """从项目账里找有没有在跟的、跟新需求相关的大项目。
+    
+    返回 (项目名, 来源描述)：
+    · 找到了 → ("项目名", "从项目账续")
+    · 没找到 → ("", "新建项目")
+    """
+    text_lower = text.lower()
+    for proj in _read_project_ledger():
+        # 用关键词或标题匹配
+        if any(kw.lower() in text_lower for kw in proj.get("keywords", [])):
+            return proj["title"], "从项目账续"
+        if any(kw.lower() in proj.get("title", "").lower() for kw in text.split()[:5] if kw):
+            return proj["title"], "从项目账续"
+    return "", "新建项目"
 
 # 三档优先级，从急到缓。定级只靠可核对的信号，不靠心情。
 P0, P1, P2 = "P0", "P1", "P2"
@@ -102,6 +155,8 @@ class Requirement:
     rationale: str        # 定级理由（可核对）
     raw: str              # 原文（截断保留，便于回溯）
     created: str          # 归一时间（ISO）
+    project: str = ""      # 📋 关联项目：属于哪个在跟的大项目（从项目账续或新建）
+    project_source: str = ""  # 📋 项目来源：從項目账续 / 新建项目
 
     def to_record(self) -> dict:
         """落 JSONL 的一行（全字段，可完整回放）。"""
@@ -227,17 +282,26 @@ def _req_id(source: str, title: str) -> str:
 
 
 def normalize(raw: RawSignal) -> Requirement:
-    """RawSignal → Requirement：抽证据、定验收、判优先级，全程不联网、纯文本匹配。"""
+    """RawSignal → Requirement：抽证据、定验收、判优先级，全程不联网、纯文本匹配。
+    
+    在形成 intent 前先查项目账——有在跟的先续、没有再开新，
+    由此长出一段「跨心跳的自我」，深耕一件大事到完成。
+    """
     title = _summarize(raw.text)
     evidence = link_evidence(raw.text, raw.ref)
     acceptance = acceptance_for(raw.text)
     priority, rationale = priority_for(raw.text, evidence, raw.source)
     created = raw.ts or datetime.datetime.now().isoformat(timespec="seconds")
+    
+    # 📋 在形成 intent 前先读项目账：有在跟的先续、没有再开新
+    project, project_source = _find_project(raw.text)
+    
     return Requirement(
         id=_req_id(raw.source, title), source=raw.source, ref=raw.ref,
         title=title, evidence=evidence, acceptance=acceptance,
         priority=priority, rationale=rationale,
         raw=(raw.text or "").strip()[:500], created=created,
+        project=project, project_source=project_source,
     )
 
 
