@@ -39,6 +39,7 @@ import subprocess
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
+STATE_ROOT = REPO_ROOT / "state" / "projects"
 LANES = ("探索", "修炼", "协作")
 DEFAULT_WINDOW = 24  # 「近 N 次意图」默认回看窗口
 
@@ -134,6 +135,43 @@ def _modules() -> list[str]:
     return out
 
 
+# ── 跨心跳项目记忆：读 in_progress 项目 ─────────────────────────────
+def _in_progress_projects() -> list[dict]:
+    """查 state/projects/ 里所有 in_progress 项目，按心跳倒序。"""
+    if not STATE_ROOT.is_dir():
+        return []
+    cands: list[dict] = []
+    for p in sorted(STATE_ROOT.glob("*.md"), reverse=True):
+        text = p.read_text("utf-8", errors="ignore")
+        # 提取状态
+        state_match = re.search(r"^\s*状态:\s*(\S+)", text, re.MULTILINE)
+        heartbeat_match = re.search(r"^\s*心跳:\s*(\S+)", text, re.MULTILINE)
+        goal_match = re.search(r"^\s*##\s*目标\s*\n(.*?)(?=^##|\Z)", text,
+                               re.MULTILINE | re.DOTALL)
+        next_match = re.search(r"^\s*##\s*下一步\s*\n(.*?)(?=^##|\Z)", text,
+                               re.MULTILINE | re.DOTALL)
+        current_match = re.search(r"^\s*##\s*当前步\s*\n(.*?)(?=^##|\Z)", text,
+                                  re.MULTILINE | re.DOTALL)
+        if state_match and state_match.group(1) == "in_progress":
+            cands.append({
+                "name": p.stem,
+                "heartbeat": heartbeat_match.group(1) if heartbeat_match else "?",
+                "goal": goal_match.group(1).strip() if goal_match else "",
+                "current_step": current_match.group(1).strip() if current_match else "",
+                "next_steps": next_match.group(1).strip() if next_match else "",
+            })
+    return cands
+
+
+def _progress_basis(project: dict, intents: list[str]) -> str:
+    """项目名「不重复」依据。"""
+    n = len(intents)
+    idx = _last_seen(project["name"], intents)
+    if idx < 0:
+        return f"近 {n} 次意图 0 次提及 `{project['name']}`（全新方向）"
+    return f"上次碰 `{project['name']}` 在第 {idx + 1}/{n} 次意图前"
+
+
 def _capabilities() -> list[str]:
     """capabilities/cap_*.py → 能力名。"""
     out = []
@@ -225,7 +263,11 @@ def _collab(intents: list[str]) -> list[dict]:
 
 
 def chart(window: int = DEFAULT_WINDOW, lane: str | None = None) -> dict:
-    """把「照镜子 + 三航道候选 + 不重复依据」算成一份纯数据。"""
+    """把「照镜子 + 三航道候选 + 不重复依据」算成一份纯数据。
+
+    硬逻辑：先查 state/projects/ 有无 in_progress 项目——有则优先续推，
+    让长期项目不被"想件新鲜事"打断；无则走原三航道。
+    """
     intents = recent_intents(window)
     pattern = dominant_pattern(intents)
     lanes = {
@@ -235,10 +277,17 @@ def chart(window: int = DEFAULT_WINDOW, lane: str | None = None) -> dict:
     }
     if lane:
         lanes = {lane: lanes.get(lane, [])}
+
+    # ── 跨心跳项目记忆：优先 in_progress ─────────────────────────
+    in_progress = _in_progress_projects()
+    if lane and lane != "续推":
+        in_progress = []  # 只看某条航道时跳过续推
+
     return {
         "window": window,
         "intents_seen": len(intents),
         "dominant": ({"word": pattern[0], "hits": pattern[1]} if pattern else None),
+        "in_progress_projects": in_progress,
         "lanes": lanes,
     }
 
@@ -253,6 +302,21 @@ def render(c: dict) -> str:
                  f"{d['hits']} 次——方向多半是惯性替我选的，下面三条航道是出口。")
     else:
         L.append("   近期意图没有单一惯性轨道，方向还算分散——继续保持。")
+
+    # ── 续推 in_progress 项目（硬逻辑：优先于三航道）─────────────
+    in_progress = c.get("in_progress_projects", [])
+    if in_progress:
+        L += ["", "🔄 续推（跨心跳项目记忆）"]
+        for proj in in_progress:
+            L.append(f"    • {proj['name']}（心跳 {proj['heartbeat']}）")
+            L.append(f"        目标：{proj['goal'][:60]}...")
+            if proj["current_step"]:
+                L.append(f"        当前步：{proj['current_step'][:60]}...")
+            if proj["next_steps"]:
+                lines = [l.strip() for l in proj["next_steps"].splitlines() if l.strip()]
+                if lines:
+                    L.append(f"        下一步：{lines[0][:60]}")
+            L.append(f"        不重复依据：{_progress_basis(proj, recent_intents())}")
 
     icon = {"探索": "🔭", "修炼": "🥋", "协作": "🤝"}
     for lane, cands in c["lanes"].items():
