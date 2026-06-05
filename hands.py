@@ -229,7 +229,7 @@ def _gather_context(task: str, repo: pathlib.Path) -> tuple[list[str], str]:
         seen.add(name)
         p = repo / name
         try:
-            if p.exists() and p.is_file() and p.stat().st_size < 24000:
+            if p.exists() and p.is_file() and p.stat().st_size < 80000:   # 放宽到 80KB：否则 crab.py(33KB)/planner.py(67KB) 等核心文件手都看不到、改不动，永远只能新建小文件
                 blobs.append(f"# ===== 现有 {name}（要改它就基于这份原文给 EDIT）=====\n"
                              + p.read_text("utf-8"))
         except OSError:
