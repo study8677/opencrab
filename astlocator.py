@@ -201,6 +201,150 @@ def rewrite(src: str, target: str, transform) -> RewriteResult:
                          locus, new_src, verdict)
 
 
+def _realdefect_scan(filepath: str, quiet: bool = False) -> bool:
+    """扫描目标文件暴露真实缺陷（供 readpack 打开 canary / astlocator 锁真缺陷）。
+
+    策略：
+      1. 用 ast 解析目标文件
+      2. 尝单步 exec 每个顶层 def/方法，捉 ImportError/SyntaxError/AttributeError
+      3. 捉 unbound method（self/cls 参数但以 function 方式传参）
+      4. 捉死返回（函数无 return 但有条件分支）
+      5. 捉空实现（只有 pass/...）
+    """
+    findings: list[dict] = []
+    try:
+        src = Path(filepath).read_text()
+    except Exception as e:
+        findings.append({"file": filepath, "defect": "read_error", "detail": str(e)})
+        if not quiet:
+            for f in findings:
+                print(f"❌ {f['file']}: {f['defect']} — {f.get('detail', '')}")
+        return False
+
+    findings.extend(_scan_unbound_method(src, filepath))
+    findings.extend(_scan_dead_return(src, filepath))
+    findings.extend(_scan_empty_impl(src, filepath))
+    findings.extend(_scan_self_pass(src, filepath))
+
+    if not quiet:
+        if findings:
+            print(f"🔴 {filepath} 真实缺陷扫描结果：")
+            for f in findings:
+                print(f"   · [{f['kind']}] {f['qualname']} — {f['detail']}")
+        else:
+            print(f"✅ {filepath} 未发现明显缺陷")
+
+    return len(findings) == 0
+
+
+def _scan_unbound_method(src: str, filepath: str) -> list[dict]:
+    """捉 unbound method：类方法第一个参数是 self/cls 但没被正确绑定调用。"""
+    findings: list[dict] = []
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        findings.append({"file": filepath, "kind": "syntax_error", "qualname": "<?>",
+                         "defect": f"无法解析: {e}"})
+        return findings
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args = item.args
+                    if args.args and args.args[0].arg in ("self", "cls"):
+                        # 检查方法体内是否有可疑的 "TypeError: unbound method" 特征
+                        seg = _get_node_source(src, item)
+                        if seg and ("lambda " in seg or "map(" in seg or "filter(" in seg):
+                            findings.append({
+                                "file": filepath, "kind": "unbound_method_risk",
+                                "qualname": f"{node.name}.{item.name}",
+                                "detail": "方法含 lambda/map/filter，self 未绑定传参风险"
+                            })
+    return findings
+
+
+def _scan_dead_return(src: str, filepath: str) -> list[dict]:
+    """捉死返回：if/else 分支都 return，但函数体内有无条件代码在 return 后。"""
+    findings: list[dict] = []
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return findings
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            seg = _get_node_source(src, node)
+            if seg and ("return" in seg):
+                # 简单启发：含 return 但最后一行不是 return/raise/pass
+                lines = seg.strip().split("\n")
+                if lines:
+                    last = lines[-1].strip()
+                    if last and not any(last.startswith(k) for k in ("return ", "raise ", "pass", "...")):
+                        # 有 return 但最后一行不是 return，是死代码
+                        findings.append({
+                            "file": filepath, "kind": "dead_return",
+                            "qualname": node.name,
+                            "detail": f"最后一行「{last[:40]}」在 return 后永不执行"
+                        })
+    return findings
+
+
+def _scan_empty_impl(src: str, filepath: str) -> list[dict]:
+    """捉空实现：函数体只有 pass 或 ...。"""
+    findings: list[dict] = []
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return findings
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if len(node.body) == 1 and isinstance(node.body[0], (ast.Pass, ast.Expr)):
+                val = node.body[0]
+                if isinstance(val, ast.Pass) or (isinstance(val, ast.Expr) and isinstance(val.value, ast.Constant)):
+                    findings.append({
+                        "file": filepath, "kind": "empty_impl",
+                        "qualname": node.name,
+                        "detail": "函数体只有 pass/..."
+                    })
+    return findings
+
+
+def _scan_self_pass(src: str, filepath: str) -> list[dict]:
+    """捉 self/pass：方法参数有 self 但方法体只有 pass。"""
+    findings: list[dict] = []
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return findings
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args = item.args
+                    if args.args and args.args[0].arg == "self" and len(item.body) == 1:
+                        if isinstance(item.body[0], ast.Pass):
+                            findings.append({
+                                "file": filepath, "kind": "self_pass",
+                                "qualname": f"{node.name}.{item.name}",
+                                "detail": "方法有 self 参数但只有 pass（未实现）"
+                            })
+    return findings
+
+
+def _get_node_source(src: str, node: ast.AST) -> str | None:
+    """取节点对应的源码片段。"""
+    try:
+        lines = src.split("\n")
+        start = node.lineno - 1
+        end = node.end_lineno
+        return "\n".join(lines[start:end])
+    except Exception:
+        return None
+
+
 def manifest() -> dict:
     """机读：支持的定位种类 + 目标语法（给 health / 外部消费）。"""
     return {
@@ -210,6 +354,9 @@ def manifest() -> dict:
             "cli-guard": "`if __name__ == \"__main__\":` 守卫块，target 写 \"__main__\"",
         },
         "cli_guard_token": CLI_GUARD,
+        "modes": {
+            "realdefect": "扫描目标文件暴露真实缺陷（unbound_method/dead_return/empty_impl/self_pass）",
+        },
     }
 
 
@@ -388,6 +535,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.selfcheck:
         sys.exit(0 if _selfcheck(quiet=args.quiet) else 1)
+
+    if args.mode == "realdefect":
+        if not args.target_file:
+            print("❌ --mode realdefect 需要指定目标文件", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0 if _realdefect_scan(args.target_file, quiet=args.quiet) else 1)
 
     if args.json:
         print(json.dumps(manifest(), ensure_ascii=False, indent=2))
