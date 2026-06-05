@@ -397,6 +397,38 @@ def _external_signals() -> str:
         return ""
 
 
+def _active_project() -> str:
+    """📋 读出手上正在推进的跨心跳项目，逼自己开拍前先决定「续旧还是开新」，
+    而不是每拍换新鲜把项目晾在半路——这是把「项目记忆」真正接进生命循环的那一刀。
+    数据在 state/(虽被 .gitignore，但同一长活进程里跨拍持久可读)；任何出错都吞掉，
+    绝不让读项目这件事弄死意图生成。"""
+    try:
+        briefs = []
+        zhang = STATE_DIR / "项目账.md"
+        if zhang.exists():
+            head = "\n".join(zhang.read_text("utf-8").splitlines()[:20]).strip()
+            if head:
+                briefs.append("【项目账·跨心跳路线图】\n" + head)
+        proj_dir = STATE_DIR / "projects"
+        if proj_dir.exists():
+            for md in sorted(proj_dir.glob("*.md")):
+                lines = [ln.strip() for ln in md.read_text("utf-8").splitlines() if ln.strip()]
+                if not lines:
+                    continue
+                title = lines[0].lstrip("# ").strip()[:80]
+                hint = next((ln[:80] for ln in lines[1:]
+                             if any(k in ln.lower() for k in
+                                    ("status", "状态", "in_progress", "进度", "当前", "下一步", "next"))), "")
+                briefs.append(f"- {md.name}：{title}{('  · ' + hint) if hint else ''}")
+        if not briefs:
+            return ""
+        return ("📋 你手上正在推进的跨心跳项目（**开拍先决定：续推它、还是开新？** "
+                "别又换个新鲜点子把它晾在半路——立过的山头没登顶就别下山）：\n"
+                + "\n".join(briefs) + "\n")
+    except Exception:
+        return ""
+
+
 def form_intent(territory: str, recent: str) -> tuple[str, int]:
     """❤️ 生成意图(心脏)：结合技能 + 外部灵感 + 记忆教训，自由地决定今天往哪进化。"""
     try:
@@ -416,6 +448,7 @@ def form_intent(territory: str, recent: str) -> tuple[str, int]:
         你最近几次已经做过的事（绝不要重复，也别只在同一个点上反复打磨）：
         {recent or '(还没有——这是你破壳后的第一次心跳)'}
 
+        {_active_project()}
         {_recall_lessons(recent)}
         {_external_signals()}
         记住你的使命：在自己的领地上不断进化、发展，长成一个越来越强、越来越完整、
