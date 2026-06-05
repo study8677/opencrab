@@ -50,7 +50,7 @@ _ACTIVE = _PLANNER_DIR / "active.json"              # 当前在走的那份计�
 PENDING = "pending"     # ⬜ 还没轮到/前置没齐
 READY = "ready"         # 🔵 依赖已满足，可以开工（前沿）
 DONE = "done"           # ✅ 已完成
-FAILED = "failed"       # ❌ 翻车了（触发回退）
+FAILED = "failed"      # ❌ 翻车了（触发回退）
 BLOCKED = "blocked"     # 🚧 某前置失败，连带卡住
 SKIPPED = "skipped"     # ⏭️ 主动跳过（多由回退改写而来）
 _STATUS_MARK = {PENDING: "⬜", READY: "🔵", DONE: "✅",
@@ -1277,6 +1277,26 @@ def _cmd_board(args) -> None:
             print(f"     · {mv}")
         print("")
     print(board.render())
+
+
+def _cmd_delegate(args) -> None:
+    """分工协作派遣台 CLI：横切目标、派分身跑检索/实现/验证、汇总方案、可选直接 kickoff。"""
+    goal = " ".join(args.goal) if args.goal else ""
+    if not goal:
+        print("🐜  --delegate 需要给一个目标描述")
+        return
+    roles = [r.strip() for r in args.roles.split(",")] if args.roles else None
+    constraints = args.constraint or []
+    d = delegate(goal, roles, constraints)
+    print(d.render())
+    if args.kickoff:
+        print("")
+        out = delegate_kickoff(goal, roles, constraints)
+        if out.get("ok"):
+            print(f"🐜  已把汇总方案交给 planner 起了一份 {out['steps']} 步的计划。")
+            print("    用 `python planner.py --show` 看路线。")
+        else:
+            print(f"🐜  没能发起：{out.get('reason', '未知原因')}")
 
 
 def main(argv: list[str] | None = None) -> None:
