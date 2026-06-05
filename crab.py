@@ -627,7 +627,7 @@ def _die(msg: str) -> "NoReturn":   # noqa: F821  统一的参数错误出口
 
 
 # ── 各子命令的处理函数(每个吃解析好的 args，自己负责退出码)──────────────
-def _cmd_live(args: argparse.Namespace) -> None:
+def _cmd_live(args: argparse.Namespace) -> None:   # type: ignore[type-arg]
     """持续心跳，一直活着、一直进化；`--once` 则只跳一次。"""
     banner()
     once = bool(getattr(args, "once", False))
@@ -648,14 +648,14 @@ def _cmd_live(args: argparse.Namespace) -> None:
         audit.record("exit", reason="interrupt")
 
 
-def _cmd_caps(args: argparse.Namespace) -> None:
+def _cmd_caps(args: argparse.Namespace) -> None:   # type: ignore[type-arg]
     """列出全部可插拔能力及其启用状态。"""
     enabled = {c.name for c in capabilities.enabled_capabilities()}
     for c in capabilities.all_capabilities():
         log(f"  {'🟢' if c.name in enabled else '⚪'} {c.name} — {c.summary}")
 
 
-def _cmd_cap(args: argparse.Namespace) -> None:
+def _cmd_cap(args: argparse.Namespace) -> None:   # type: ignore[type-arg]
     """单独运行一种能力；能力不存在或失败 -> 退出码 1。"""
     name = args.name
     r = capabilities.run(name)
@@ -665,7 +665,7 @@ def _cmd_cap(args: argparse.Namespace) -> None:
     sys.exit(0 if r.ok else 1)
 
 
-def _cmd_replay(args: argparse.Namespace) -> None:
+def _cmd_replay(args: argparse.Namespace) -> None:   # type: ignore[type-arg]
     """回放结构化运行审计：把某天的 JSONL 记录归纳并逐条摊开。"""
     day = args.day or today()
     try:
@@ -692,7 +692,7 @@ def _cmd_replay(args: argparse.Namespace) -> None:
         log(f"  #{str(r.get('seq', '?')):>3} {ts} {ev}{tail}")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:   # type: ignore[type-arg]
     """搭一套子命令式的 CLI；不带子命令时默认走 `live`。"""
     ap = argparse.ArgumentParser(
         prog="crab.py",
