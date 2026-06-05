@@ -63,6 +63,7 @@ _load_env(REPO_ROOT / ".env")
 API_KEY = os.environ.get("OPENCRAB_API_KEY")
 BASE_URL = os.environ.get("OPENCRAB_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 MODEL = os.environ.get("OPENCRAB_MODEL", "gpt-5.4-mini")
+CODER_MODEL = os.environ.get("OPENCRAB_CODER_MODEL", "")   # 写代码的手专用脑；空=沿用主脑 MODEL
 # 备用脑：主脑失效(key 失效 / 连不上)时自动切过去，主脑恢复又自动切回——大脑冗余，不靠人工救
 FALLBACK_API_KEY = os.environ.get("OPENCRAB_FALLBACK_API_KEY")
 FALLBACK_BASE_URL = os.environ.get("OPENCRAB_FALLBACK_BASE_URL", "").rstrip("/")
@@ -191,6 +192,24 @@ def brain(system: str, prompt: str) -> tuple[str, int]:
             last = f"{name}({model}) {e}"
             log(f"⚠️  够不到{name}({model})：{e}；换下一个脑…")
     return f"{THINK_FAILED_PREFIX}所有脑都没应答：{last})", 0
+
+
+def coder_brain(system: str, prompt: str) -> tuple[str, int]:
+    """写代码的「手」专用脑：默认换更快的 CODER_MODEL。
+    推理模型(如 M3)写大补丁会陷进超长思维链、动辄几百秒读超时；
+    快模型(如 MiniMax-M2.7-highspeed)几秒就出干净补丁。
+    没配 CODER_MODEL → 回退通用 brain；配了但这次够不到 → 直接返回降级占位符，
+    绝不回退去空等慢主脑那几百秒(那正是之前每拍超时、推空进化的根)。"""
+    if not (CODER_MODEL and API_KEY):
+        return brain(system, prompt)
+    try:
+        return _call_one_brain(API_KEY, BASE_URL, CODER_MODEL, system, prompt)
+    except urllib.error.HTTPError as e:
+        log(f"⚠️  写码脑({CODER_MODEL})被拒({e.code})")
+        return f"{THINK_FAILED_PREFIX}写码脑被拒：{e.code})", 0
+    except Exception as e:   # noqa: BLE001 —— 快脑抖动不致命，返回占位符让这拍干净跳过
+        log(f"⚠️  写码脑({CODER_MODEL})够不到：{e}")
+        return f"{THINK_FAILED_PREFIX}写码脑够不到：{e})", 0
 
 
 def _dream() -> str:

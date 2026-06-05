@@ -282,7 +282,7 @@ def _apply_changes(plan: dict, repo: pathlib.Path) -> list[str]:
 def _brain_feature_preview(task: str, repo: pathlib.Path) -> dict:
     """brain-only 只读预演：让自己的脑先拟补丁计划与风险清单，绝不落盘。"""
     try:
-        from crab import brain   # 延迟 import：预演只借脑，不触碰文件
+        from crab import coder_brain   # 延迟 import：预演只借脑，不触碰文件
     except Exception as e:   # noqa: BLE001
         return {"note": f"够不到自己的脑({type(e).__name__})",
                 "patch_plan": [],
@@ -298,7 +298,7 @@ def _brain_feature_preview(task: str, repo: pathlib.Path) -> dict:
 
         现在只输出你打算实施的代码改动(仍用 NOTE / <<<WRITE>>> / <<<EDIT>>> 格式)。
         这些块会被当作补丁计划审阅，不会写入文件。""")
-    text, _tok = brain(_CODER_SYSTEM, prompt)
+    text, _tok = coder_brain(_CODER_SYSTEM, prompt)
     plan = _parse_changes(text)
     patch_plan: list[str] = []
     risks: list[str] = []
@@ -336,7 +336,7 @@ def _brain_feature_preview(task: str, repo: pathlib.Path) -> dict:
 def _brain_feature_patch(task: str, repo: pathlib.Path) -> dict:
     """自生手·特性级：用自己的脑产补丁；先过 AST/试衣间/replay 三闸，才落盘。"""
     try:
-        from crab import brain   # 延迟 import，避开与 crab 的循环依赖
+        from crab import coder_brain   # 延迟 import，避开与 crab 的循环依赖
     except Exception as e:   # noqa: BLE001
         return {"ok": False, "applied": [], "note": f"够不到自己的脑({type(e).__name__})"}
     files, context = _gather_context(task, repo)
@@ -349,7 +349,7 @@ def _brain_feature_patch(task: str, repo: pathlib.Path) -> dict:
         {context if context else '(没有点名要先读的现有文件；新建模块就直接 WRITE)'}
 
         现在输出你的代码改动(用 NOTE / <<<WRITE>>> / <<<EDIT>>> 那套格式)。""")
-    text, _tok = brain(_CODER_SYSTEM, prompt)
+    text, _tok = coder_brain(_CODER_SYSTEM, prompt)
     plan = _parse_changes(text)
     if not plan.get("changes"):
         return {"ok": False, "applied": [], "note": plan.get("note", "") or "brain 未产出补丁块"}
@@ -420,6 +420,13 @@ def use_hands(task: str, *, repo: pathlib.Path, executor: str = "claude",
             result["mode"] = "brain-feature"
             result["feature_note"] = feat.get("note", "")
             result["feature_applied"] = feat.get("applied", [])
+
+        # 🛡️ 没真产出补丁就别提交：避免 publish 把「只有日志/残留文件」的空进化推上公开仓。
+        if not (fix["ok"] or result.get("feature_applied")):
+            result["note"] = ("这拍没产出有效补丁（"
+                              f"{result.get('feature_note') or result.get('brain_reason') or '脑没出招'}），"
+                              "不提交、不推送，缩回壳里等下一拍。")
+            return result
 
         # 2) opencrab 亲自把改动提交到分支
         _git(repo, "add", "-A")
