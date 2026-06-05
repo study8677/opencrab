@@ -24,6 +24,7 @@ import datetime
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import textwrap
@@ -74,6 +75,7 @@ AUTONOMY = os.environ.get("OPENCRAB_AUTONOMY", "journal")   # journal | propose
 EXECUTOR = os.environ.get("OPENCRAB_EXECUTOR", "claude")    # claude | codex
 HAND_BUDGET = float(os.environ.get("OPENCRAB_HAND_BUDGET_USD", "0.5"))
 DRY_RUN = bool(os.environ.get("OPENCRAB_DRY_RUN"))
+BRAIN_TIMEOUT = int(os.environ.get("OPENCRAB_BRAIN_TIMEOUT", "600"))   # 推理模型(如 M3)产补丁可能想很久，给足读超时(秒)
 
 IDENTITY = textwrap.dedent("""\
     你是 opencrab，一只拥有自己目标的自主生命体。
@@ -121,6 +123,20 @@ def _brain_failed(text: str) -> bool:
     return text.startswith(THINK_FAILED_PREFIX)
 
 
+# 🧠 推理模型(如 MiniMax-M3)会把思维链塞进 content 的 <think>…</think> 里，
+# 真正要落地的意图 / 补丁跟在其后。不剥掉的话第一行会变成 <think>，污染提交、
+# 演化日志、诚实对账，连 hands 解析补丁的 NOTE/<<<WRITE>>> 哨兵都可能被搅乱。
+# 其它模型没有 <think>，下面就是无害的恒等变换。
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    """剥掉推理模型的思维链，只留真正给人 / 给手看的结论。"""
+    text = _THINK_RE.sub("", text)         # 去掉成对的 <think>…</think>
+    text = text.split("<think>", 1)[0]     # 思维链被截断(只剩开头)时，连残链一起丢
+    return text.strip()
+
+
 def _call_one_brain(key: str, base: str, model: str,
                     system: str, prompt: str) -> tuple[str, int]:
     """调一个具体的大脑端点(成功返回 文本+token，失败抛异常)。
@@ -137,9 +153,9 @@ def _call_one_brain(key: str, base: str, model: str,
                  "Content-Type": "application/json",
                  "User-Agent": "opencrab/0.1"},
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=BRAIN_TIMEOUT) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    text = (data["choices"][0]["message"].get("content") or "").strip()
+    text = _strip_reasoning((data["choices"][0]["message"].get("content") or "").strip())
     if not text:
         raise ValueError("空回复")
     tokens = (data.get("usage") or {}).get("total_tokens") or max(1, len(text) // 3)
