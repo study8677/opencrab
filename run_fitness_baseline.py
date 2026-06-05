@@ -65,6 +65,12 @@ class BaselineResult:
             return 0.0
         return self.total_passed / self.total_tests
 
+    @property
+    def canary_pass_rate(self) -> float:
+        if self.canary_total == 0:
+            return 0.0
+        return self.canary_passed / self.canary_total
+
     def summary(self) -> str:
         return (
             f"基线评测 [{self.timestamp}]\n"
@@ -74,7 +80,7 @@ class BaselineResult:
             f"  ─ arena:      {self.arena_passed}/{self.arena_total}\n"
             f"  ─ boundary:   {self.boundary_passed}/{self.boundary_total}\n"
             f"  ─ regression: {self.regression_passed}/{self.regression_total}\n"
-            f"  ─ canary:     {self.canary_passed}/{self.canary_total}\n"
+            f"  ─ canary:     {self.canary_passed}/{self.canary_total} ({self.canary_pass_rate:.1%})\n"
             + (f"  ⚠ 错误: {len(self.errors)}\n" if self.errors else "")
         )
 
@@ -170,11 +176,13 @@ def save_baseline(result: BaselineResult, label: str = "current") -> Path:
 def generate_report(result: BaselineResult) -> str:
     """生成 Markdown 格式的基线报告"""
     badge = "🟢" if result.pass_rate >= 0.9 else ("🟡" if result.pass_rate >= 0.7 else "🔴")
+    canary_badge = "🟢" if result.canary_pass_rate >= 0.75 else ("🟡" if result.canary_pass_rate >= 0.5 else "🔴")
 
     report = f"""# 真适应度基线报告
 
 **生成时间**: {result.timestamp}  
 **通过率**: {badge} {result.pass_rate:.1%}
+**Canary 通过率**: {canary_badge} {result.canary_pass_rate:.1%} (基准 75%)
 
 ## 评测汇总
 
@@ -183,8 +191,14 @@ def generate_report(result: BaselineResult) -> str:
 | Arena | {result.arena_passed} | {result.arena_failed} | {result.arena_total} | {result.arena_passed/max(result.arena_total,1):.1%} |
 | BoundaryEval | {result.boundary_passed} | {result.boundary_failed} | {result.boundary_total} | {result.boundary_passed/max(result.boundary_total,1):.1%} |
 | Regression | {result.regression_passed} | {result.regression_failed} | {result.regression_total} | {result.regression_passed/max(result.regression_total,1):.1%} |
-| Canary | {result.canary_passed} | {result.canary_failed} | {result.canary_total} | {result.canary_passed/max(result.canary_total,1):.1%} |
+| Canary | {result.canary_passed} | {result.canary_failed} | {result.canary_total} | {result.canary_pass_rate:.1%} |
 | **总计** | **{result.total_passed}** | **{result.total_failed}** | **{result.total_tests}** | **{result.pass_rate:.1%}** |
+
+## Canary 基准检查
+
+- **基准线**: 75%
+- **当前**: {result.canary_pass_rate:.1%}
+- **状态**: {"✅ 达标" if result.canary_pass_rate >= 0.75 else "❌ 未达标"}
 
 ## 错误详情
 
@@ -216,6 +230,9 @@ def save_state_md(result: BaselineResult) -> Optional[Path]:
     md_path = state_dir / "fitness-baseline.md"
 
     badge = "🟢" if result.pass_rate >= 0.9 else ("🟡" if result.pass_rate >= 0.7 else "🔴")
+    canary_badge = "🟢" if result.canary_pass_rate >= 0.75 else ("🟡" if result.canary_pass_rate >= 0.5 else "🔴")
+    canary_status = "✅ 达标" if result.canary_pass_rate >= 0.75 else "❌ 未达标"
+
     content = f"""# Fitness Baseline — 可复算真锚
 
 > **本文件由 run_fitness_baseline.py 自动生成，git 跟踪，任何「我又进步了」需对照此文件验证。**
@@ -227,6 +244,7 @@ def save_state_md(result: BaselineResult) -> Optional[Path]:
 | 时间戳 | `{result.timestamp}` |
 | 耗时 | {result.duration_seconds:.1f}s |
 | 通过率 | {badge} {result.pass_rate:.1%} |
+| Canary | {canary_badge} {result.canary_pass_rate:.1%} ({canary_status}, 基准 75%) |
 
 ## 各维度详情
 
@@ -235,7 +253,13 @@ def save_state_md(result: BaselineResult) -> Optional[Path]:
 | arena | {result.arena_passed} | {result.arena_failed} | {result.arena_total} | {result.arena_passed/max(result.arena_total,1):.1%} |
 | boundaryeval | {result.boundary_passed} | {result.boundary_failed} | {result.boundary_total} | {result.boundary_passed/max(result.boundary_total,1):.1%} |
 | regression | {result.regression_passed} | {result.regression_failed} | {result.regression_total} | {result.regression_passed/max(result.regression_total,1):.1%} |
-| canary | {result.canary_passed} | {result.canary_failed} | {result.canary_total} | {result.canary_passed/max(result.canary_total,1):.1%} |
+| canary | {result.canary_passed} | {result.canary_failed} | {result.canary_total} | {result.canary_pass_rate:.1%} |
+
+## Canary 基准检查
+
+| 检查项 | 基准 | 当前 | 状态 |
+|--------|------|------|------|
+| Canary 通过率 | 75% | {result.canary_pass_rate:.1%} | {canary_status} |
 
 ## 数值快照（机器可读）
 
@@ -243,6 +267,7 @@ def save_state_md(result: BaselineResult) -> Optional[Path]:
 {{
   "timestamp": "{result.timestamp}",
   "pass_rate": {result.pass_rate},
+  "canary_pass_rate": {result.canary_pass_rate},
   "total_passed": {result.total_passed},
   "total_failed": {result.total_failed},
   "total_tests": {result.total_tests},
@@ -272,11 +297,14 @@ def main():
     parser.add_argument("--modules", nargs="*", help="指定 regression 测试的模块")
     parser.add_argument("--label", default="current", help="基线标签 (用于文件名)")
     parser.add_argument("--output-md", action="store_true", help="同时写入 state/projects/fitness-baseline.md")
+    parser.add_argument("--canary-only", action="store_true", help="仅运行 canary 评测")
     args = parser.parse_args()
 
     print("=" * 60)
     print("真适应度基线评测")
     print(f"模式: {'快速 smoke' if args.quick else '完整评测'}")
+    if args.canary_only:
+        print("范围: 仅 canary")
     if args.modules:
         print(f"模块: {', '.join(args.modules)}")
     print("=" * 60)
@@ -284,44 +312,63 @@ def main():
     result = BaselineResult()
     start_time = time.time()
 
-    # 1. Arena 评测
-    print("\n[1/4] 运行 Arena 评测...")
-    arena_passed, arena_failed, arena_total = run_arena(args)
-    result.arena_passed = arena_passed
-    result.arena_failed = arena_failed
-    result.arena_total = arena_total
-    print(f"      Arena: {arena_passed}/{arena_total} 通过")
+    if args.canary_only:
+        # 仅运行 canary
+        print("\n[仅 Canary] 运行 Canary 评测...")
+        canary_passed, canary_failed, canary_total = run_canary(args)
+        result.canary_passed = canary_passed
+        result.canary_failed = canary_failed
+        result.canary_total = canary_total
+        print(f"      Canary: {canary_passed}/{canary_total} 通过 ({result.canary_pass_rate:.1%})")
+    else:
+        # 1. Arena 评测
+        print("\n[1/4] 运行 Arena 评测...")
+        arena_passed, arena_failed, arena_total = run_arena(args)
+        result.arena_passed = arena_passed
+        result.arena_failed = arena_failed
+        result.arena_total = arena_total
+        print(f"      Arena: {arena_passed}/{arena_total} 通过")
 
-    # 2. BoundaryEval 评测
-    print("\n[2/4] 运行 BoundaryEval 评测...")
-    boundary_passed, boundary_failed, boundary_total = run_boundaryeval(args)
-    result.boundary_passed = boundary_passed
-    result.boundary_failed = boundary_failed
-    result.boundary_total = boundary_total
-    print(f"      BoundaryEval: {boundary_passed}/{boundary_total} 通过")
+        # 2. BoundaryEval 评测
+        print("\n[2/4] 运行 BoundaryEval 评测...")
+        boundary_passed, boundary_failed, boundary_total = run_boundaryeval(args)
+        result.boundary_passed = boundary_passed
+        result.boundary_failed = boundary_failed
+        result.boundary_total = boundary_total
+        print(f"      BoundaryEval: {boundary_passed}/{boundary_total} 通过")
 
-    # 3. Regression 评测
-    print("\n[3/4] 运行 Regression 评测...")
-    reg_passed, reg_failed, reg_total = run_regression(args)
-    result.regression_passed = reg_passed
-    result.regression_failed = reg_failed
-    result.regression_total = reg_total
-    print(f"      Regression: {reg_passed}/{reg_total} 通过")
+        # 3. Regression 评测
+        print("\n[3/4] 运行 Regression 评测...")
+        reg_passed, reg_failed, reg_total = run_regression(args)
+        result.regression_passed = reg_passed
+        result.regression_failed = reg_failed
+        result.regression_total = reg_total
+        print(f"      Regression: {reg_passed}/{reg_total} 通过")
 
-    # 4. Canary 评测
-    print("\n[4/4] 运行 Canary 评测...")
-    canary_passed, canary_failed, canary_total = run_canary(args)
-    result.canary_passed = canary_passed
-    result.canary_failed = canary_failed
-    result.canary_total = canary_total
-    print(f"      Canary: {canary_passed}/{canary_total} 通过")
+        # 4. Canary 评测
+        print("\n[4/4] 运行 Canary 评测...")
+        canary_passed, canary_failed, canary_total = run_canary(args)
+        result.canary_passed = canary_passed
+        result.canary_failed = canary_failed
+        result.canary_total = canary_total
+        print(f"      Canary: {canary_passed}/{canary_total} 通过 ({result.canary_pass_rate:.1%})")
 
     # 计算耗时
     result.duration_seconds = time.time() - start_time
 
-    # 保存结果
+    # Canary 基准检查
     print("\n" + "=" * 60)
-    print("保存基线证据...")
+    print(f"📊 Canary 基准检查")
+    print(f"   基准: 75%")
+    print(f"   当前: {result.canary_pass_rate:.1%}")
+    if result.canary_pass_rate >= 0.75:
+        print(f"   状态: ✅ 达标 - 可焊 fitness.json 并回灌 evidence")
+    else:
+        print(f"   状态: ❌ 未达标 - 需尸检根因")
+    print("=" * 60)
+
+    # 保存结果
+    print("\n保存基线证据...")
     filepath = save_baseline(result, args.label)
     print(f"  → {filepath}")
 
