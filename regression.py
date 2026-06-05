@@ -595,13 +595,39 @@ def _run_path() -> Layer:
     return Layer("path", "🛤️ 黄金路径 · 端到端必经链", ok, summary, "\n".join(lines))
 
 
+# ── 跨心跳连续性：form_intent 必须认出「续旧」而非「开新」🏹 ──────────────
+def _run_heartbeat_continuity() -> "Layer":
+    """跑 heartbeat_cross_project_regression.py，验证跨心跳意图连续性。"""
+    try:
+        result = subprocess.run(
+            [_PY, "heartbeat_cross_project_regression.py"],
+            cwd=str(REPO_ROOT), env={**os.environ, **_STABLE_ENV},
+            capture_output=True, text=True, timeout=300,
+        )
+        out = result.stdout + result.stderr
+        ok = result.returncode == 0
+        detail_lines = out.strip().splitlines()
+        return Layer(
+            "heartbeat_continuity", "🏹 跨心跳连续性 · form_intent 续旧 vs 开新",
+            ok,
+            "意图连续性完好" if ok else "form_intent 漂移：把续认成了新",
+            "\n".join(detail_lines),
+        )
+    except Exception as e:
+        return Layer(
+            "heartbeat_continuity", "🏹 跨心跳连续性 · form_intent 续旧 vs 开新",
+            False, f"测试自身异常：{e}", "",
+        )
+
+
 # 由细到粗的顺序：先比单命令快照，再跑端到端生命线，最后看 README 的命令真能跑。
 LAYERS = {
     "snapshot": _run_snapshot,
     "path": _run_path,
     "smoke": _run_smoke,
+    "heartbeat_continuity": _run_heartbeat_continuity,
 }
-ORDER = ["snapshot", "path", "smoke"]
+ORDER = ["snapshot", "path", "smoke", "heartbeat_continuity"]
 
 
 def run(keys: list[str] | None = None) -> list[Layer]:
