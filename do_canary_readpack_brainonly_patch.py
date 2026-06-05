@@ -1,197 +1,121 @@
+#!/usr/bin/env python3
 """
-do_canary_readpack_brainonly_patch.py - 亲手推进: readpack→astlocator→brainonly_patch→patchfitroom→git
+do_canary_readpack_brainonly_patch.py
 
-目标：定位 canary.py 一处低风险纯函数缺陷，修复并验证 fitness canary 分真涨。
+对最弱格 canary 75% 下刀：
+1. reproduce_canary_3x 找挂的 case
+2. readpack 圈最小修面
+3. brain-only 出补丁
+4. 过三闸并入
+5. 让 canary 真分涨
 """
+
 import subprocess
+import sys
 import json
+import os
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).parent
+def run_cmd(cmd, desc):
+    """运行命令并返回输出"""
+    print(f"\n{'='*60}")
+    print(f"[{desc}]")
+    print(f"{'='*60}")
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    print(result.stdout)
+    if result.stderr:
+        print(f"STDERR: {result.stderr}")
+    return result.stdout, result.returncode
 
-# ── Step 1: readpack ──────────────────────────────────────────────────────────
-def readpack_canary():
-    """用 readpack 打开 canary.py 真身"""
-    print("=== Step 1: readpack canary.py ===")
-    result = subprocess.run(
-        ["python", "-c", """
-import readpack
-import inspect
-src = inspect.getsource(readpack)
-print(src[:3000])
-"""],
-        capture_output=True, text=True, cwd=REPO_ROOT
-    )
-    print(result.stdout[:2000])
-    return result.stdout
-
-# ── Step 2: astlocator ───────────────────────────────────────────────────────
-def astlocator_defect():
-    """astlocator 定位低风险纯函数缺陷"""
-    print("\n=== Step 2: astlocator 定位缺陷 ===")
-    defect_info = {
-        "file": "canary.py",
-        "function": "_check_recent_activity",
-        "line_range": "67-70",
-        "defect": "return len(list(evidence_dir.iterdir())) >= 0  # 永远 True",
-        "severity": "low",
-        "type": "pure_function_logic_bug"
-    }
-    print(f"定位缺陷: {defect_info}")
-    return defect_info
-
-# ── Step 3: brain-only JSON Patch ─────────────────────────────────────────────
-def brainonly_json_patch():
-    """brain-only 产出受限 JSON Patch"""
-    print("\n=== Step 3: brain-only 产 JSON Patch ===")
+def main():
+    # Step 1: 用 reproduce_canary_3x 找挂的 case
+    print("\n" + "="*70)
+    print("STEP 1: reproduce_canary_3x 找挂的 case")
+    print("="*70)
     
-    # 缺陷: len(...) >= 0 永远 True
-    # 修复: 检查至少有1个文件/目录 (排除自身)
-    patch = {
-        "op": "replace",
-        "path": "/_check_recent_activity",
-        "old_snippet": "return len(list(evidence_dir.iterdir())) >= 0",
-        "new_snippet": "entries = [e for e in evidence_dir.iterdir() if e.name != '.gitkeep']\n        return len(entries) > 0",
-        "rationale": "检查至少有一个真实证据条目，而非永远返回 True"
-    }
-    print(f"Patch: {json.dumps(patch, indent=2, ensure_ascii=False)}")
-    return patch
-
-# ── Step 4: apply patch manually ──────────────────────────────────────────────
-def apply_patch():
-    """应用 patch 到 canary.py"""
-    print("\n=== Step 4: 应用 Patch ===")
-    canary_path = REPO_ROOT / "canary.py"
-    content = canary_path.read_text()
+    # 运行 reproduce_canary_3x
+    stdout, rc = run_cmd("python reproduce_canary_3x.py 2>&1 | head -100", "reproduce_canary_3x")
     
-    old = "return len(list(evidence_dir.iterdir())) >= 0"
-    new = "entries = [e for e in evidence_dir.iterdir() if e.name != '.gitkeep']\n        return len(entries) > 0"
+    # 找失败的 case
+    failed_cases = []
+    lines = stdout.split('\n')
+    for i, line in enumerate(lines):
+        if 'FAIL' in line or 'ERROR' in line or 'FAILED' in line:
+            # 提取 case 信息
+            if i > 0:
+                failed_cases.append(lines[i-1] if lines[i-1].strip() else line)
     
-    if old in content:
-        content = content.replace(old, new)
-        canary_path.write_text(content)
-        print("✅ Patch applied successfully")
-        return True
-    else:
-        print("❌ Old snippet not found - may already be fixed")
-        return False
-
-# ── Step 5: patchfitroom 三闸 ─────────────────────────────────────────────────
-def patchfitroom_three_gates():
-    """patchfitroom 三闸验证"""
-    print("\n=== Step 5: patchfitroom 三闸验证 ===")
+    print(f"\n找到 {len(failed_cases)} 个失败的 case")
     
-    gates = {
-        "gate1_syntax": False,
-        "gate2_import": False,
-        "gate3_fitness_impact": False
-    }
+    # 如果没找到失败，用 peek_weakest 看最弱的
+    if not failed_cases:
+        print("\nreproduce_canary_3x 没有输出失败，尝试 peek_weakest...")
+        stdout, rc = run_cmd("python peek_weakest.py --limit 5", "peek_weakest")
+        
+        # 尝试解析最弱的 case
+        for line in stdout.split('\n'):
+            if 'canary' in line.lower() or '75' in line:
+                failed_cases.append(line.strip())
     
-    # Gate 1: Syntax check
-    result = subprocess.run(
-        ["python", "-m", "py_compile", "canary.py"],
-        capture_output=True, text=True, cwd=REPO_ROOT
-    )
-    gates["gate1_syntax"] = result.returncode == 0
-    print(f"Gate1 语法: {'✅' if gates['gate1_syntax'] else '❌'} {result.stderr or 'OK'}")
+    if not failed_cases:
+        print("没有找到失败的 case，尝试直接运行 fitness 测试...")
+        # 直接运行 fitness 测试看结果
+        stdout, rc = run_cmd("python -c \"from fitness_status import get_fitness_summary; print(get_fitness_summary())\"", "fitness_status")
     
-    # Gate 2: Import check
-    result = subprocess.run(
-        ["python", "-c", "from canary import Canary; print('OK')"],
-        capture_output=True, text=True, cwd=REPO_ROOT
-    )
-    gates["gate2_import"] = result.returncode == 0
-    print(f"Gate2 导入: {'✅' if gates['gate2_import'] else '❌'} {result.stdout.strip() or result.stderr}")
+    print(f"\n准备处理 {len(failed_cases)} 个 case")
     
-    # Gate 3: Fitness impact - run canary
-    result = subprocess.run(
-        ["python", "-c", "from canary import Canary; c = Canary(); r = c.run(); print(r)"],
-        capture_output=True, text=True, cwd=REPO_ROOT
-    )
-    gates["gate3_fitness_impact"] = result.returncode == 0
-    print(f"Gate3 Fitness运行: {'✅' if gates['gate3_fitness_impact'] else '❌'}")
-    if result.stdout:
-        print(f"  结果: {result.stdout.strip()}")
-    
-    all_pass = all(gates.values())
-    print(f"\n三闸全过: {'✅ YES' if all_pass else '❌ NO'}")
-    return all_pass
-
-# ── Step 6: git commit ────────────────────────────────────────────────────────
-def git_commit():
-    """焊进 git"""
-    print("\n=== Step 6: 焊进 git ===")
-    cmds = [
-        ["git", "add", "canary.py"],
-        ["git", "commit", "-m", "fix(canary): _check_recent_activity 修复永远返回 True 的缺陷\n\n- 原来: len(...) >= 0 永远为 True\n- 现在: 检查至少有1个真实证据条目\n- 验证: patchfitroom 三闸全过"],
-    ]
-    for cmd in cmds:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT)
-        print(f"  git {' '.join(cmd[1:]):50s} → {result.returncode}")
-        if result.stdout:
-            print(f"    {result.stdout.strip()}")
-        if result.stderr and "nothing to commit" not in result.stderr:
-            print(f"    {result.stderr.strip()}")
-    return True
-
-# ── Step 7: fitness 验证 canary 分 ───────────────────────────────────────────
-def run_fitness_validation():
-    """跑 fitness 验证 canary 分真涨"""
-    print("\n=== Step 7: Fitness 验证 ===")
-    
-    # 记录修复前的 fitness.json 分数
-    fp = REPO_ROOT / "fitness.json"
-    before_score = None
-    if fp.exists():
-        try:
-            data = json.loads(fp.read_text())
-            before_score = data.get("canary_score") or data.get("score") or 0
-            print(f"修复前 canary 分: {before_score}")
-        except:
-            pass
-    
-    # 运行 fitness
-    result = subprocess.run(
-        ["python", "run_fitness_baseline.py", "--quick"],
-        capture_output=True, text=True, cwd=REPO_ROOT, timeout=120
-    )
-    print(f"Fitness 运行: {'✅' if result.returncode == 0 else '❌'}")
-    if result.stdout:
-        print(f"  {result.stdout[-500:]}")
-    
-    # 检查修复后分数
-    after_score = None
-    if fp.exists():
-        try:
-            data = json.loads(fp.read_text())
-            after_score = data.get("canary_score") or data.get("score") or 0
-            print(f"修复后 canary 分: {after_score}")
-        except:
-            pass
-    
-    if before_score is not None and after_score is not None:
-        delta = after_score - before_score
-        print(f"Canary 分变化: {delta:+.2f} ({'真涨' if delta > 0 else '持平/降'})")
-        return delta >= 0
-    return True  # 无法比较但已运行成功
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    print("=" * 60)
-    print("do_canary_readpack_brainonly_patch")
-    print("=" * 60)
-    
-    readpack_canary()
-    astlocator_defect()
-    patch = brainonly_json_patch()
-    
-    if apply_patch():
-        if patchfitroom_three_gates():
-            git_commit()
-            run_fitness_validation()
-            print("\n✅ 进化完成: canary.py 缺陷已修复并焊入 git")
+    # Step 2: 对每个失败的 case 进行 readpack + brainonly
+    for idx, case in enumerate(failed_cases[:3]):  # 只处理前3个
+        print(f"\n{'='*70}")
+        print(f"处理 Case {idx+1}: {case}")
+        print("="*70)
+        
+        # 提取 case ID
+        case_id = case.split('/')[-1] if '/' in case else case.split('\\')[-1] if '\\' in case else case
+        
+        # Step 2: readpack 圈最小修面
+        print(f"\n[STEP 2] readpack 圈最小修面...")
+        stdout, rc = run_cmd(f"python readpack.py --case {case_id} 2>&1", "readpack")
+        
+        # 解析 readpack 输出，找最小 patch
+        min_patch = None
+        for line in stdout.split('\n'):
+            if 'min_patch' in line.lower() or 'minimal' in line.lower():
+                min_patch = line.strip()
+        
+        # Step 3: brain-only 出补丁
+        print(f"\n[STEP 3] brain-only 出补丁...")
+        
+        # 尝试直接调用 brainonly 相关功能
+        brainonly_cmd = f"python brainonly_canary_patch.py --case {case_id}"
+        if min_patch:
+            brainonly_cmd += f" --patch {min_patch}"
+        
+        stdout, rc = run_cmd(brainonly_cmd, "brainonly_patch")
+        
+        # Step 4: 过三闸
+        print(f"\n[STEP 4] 过三闸...")
+        stdout, rc = run_cmd("python check_three_gates_canary.py 2>&1", "three_gates")
+        
+        # 检查是否通过
+        passed = "PASS" in stdout or "pass" in stdout
+        if passed:
+            print("✓ 三闸通过!")
         else:
-            print("\n❌ 三闸未全过，回滚...")
-            subprocess.run(["git", "checkout", "canary.py"], cwd=REPO_ROOT)
-    else:
-        print("\n❌ Patch 应用失败")
+            print("✗ 三闸未完全通过，继续优化...")
+        
+        # Step 5: 如果三闸通过，并入
+        if passed:
+            print(f"\n[STEP 5] 并入 canary...")
+            stdout, rc = run_cmd("python run_canary_evolution.py --merge 2>&1", "merge")
+    
+    # 最终验证
+    print("\n" + "="*70)
+    print("最终验证: canary 真分涨")
+    print("="*70)
+    
+    # 运行 fitness baseline 看分数变化
+    stdout, rc = run_cmd("python -c \"from check_fitness_json import check_fitness; result = check_fitness(); print(f'Fitness: {result}')\"", "final_check")
+
+if __name__ == "__main__":
+    main()

@@ -1,15 +1,43 @@
 #!/usr/bin/env python3
-"""检查 crab.py 结构"""
-import ast
+"""检查关键模块是否存在且可用"""
+
+import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).parent
+def check_module(name):
+    """检查模块是否存在"""
+    try:
+        __import__(name)
+        return True, None
+    except ImportError as e:
+        return False, str(e)
+    except Exception as e:
+        return False, f"Error: {e}"
 
-with open(REPO_ROOT / "crab.py") as f:
-    content = f.read()
+def main():
+    modules = [
+        'crab',
+        'fitness_status',
+        'check_fitness_json',
+        'check_three_gates_canary',
+    ]
+    
+    print("检查关键模块:")
+    all_ok = True
+    for m in modules:
+        ok, err = check_module(m)
+        status = "✓" if ok else "✗"
+        print(f"  {status} {m}")
+        if not ok:
+            print(f"    -> {err}")
+            all_ok = False
+    
+    if not all_ok:
+        print("\n部分模块不可用，需要修复")
+        sys.exit(1)
+    else:
+        print("\n所有关键模块可用")
+        sys.exit(0)
 
-# 解析 AST 获取函数和类
-tree = ast.parse(content)
-for node in ast.walk(tree):
-    if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-        print(f"{type(node).__name__}: {node.name}")
+if __name__ == "__main__":
+    main()
