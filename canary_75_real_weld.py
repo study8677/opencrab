@@ -37,6 +37,31 @@ def run_reproduce_verification() -> bool:
         return False
 
 
+def probe_real_weld_chain(crab: Crab) -> dict:
+    """探测 canary 25% 真焊状态：找最弱的适应度格"""
+    cells = crab.list_cells()
+    weakest = None
+    lowest_fitness = 1.0
+    
+    for cell_id in cells:
+        cell = crab.get_cell(cell_id)
+        fit = cell.get("fitness", 0.5)
+        if fit < lowest_fitness:
+            lowest_fitness = fit
+            weakest = cell_id
+    
+    # 如果没找到弱点，随机选一个
+    if weakest is None and cells:
+        weakest = random.choice(cells)
+        lowest_fitness = crab.get_cell(weakest).get("fitness", 0.5)
+    
+    return {
+        "cell_id": weakest,
+        "fitness": lowest_fitness,
+        "severity": 1.0 - lowest_fitness
+    }
+
+
 def log(msg):
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] WELD: {msg}")
