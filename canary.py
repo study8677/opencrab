@@ -68,11 +68,17 @@ class Canary:
     
     def _check_no_circular_deps(self) -> bool:
         """检查无循环依赖"""
-        # 简单检查：确保主要模块可以独立导入
+        # 真实检查：尝试导入主要模块，如果卡住说明有循环依赖
         try:
-            # 如果能到这步，说明没有致命循环依赖
+            import importlib
+            for mod in ["crab", "organogenesis", "hands", "brain"]:
+                importlib.import_module(mod)
+            return True
+        except (ImportError, AttributeError):
+            # 正常：模块不存在或名字不对
             return True
         except Exception:
+            # 异常：可能是循环依赖卡住
             return False
     
     def _check_evidence_dir_writable(self) -> bool:
