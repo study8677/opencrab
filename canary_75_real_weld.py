@@ -1,10 +1,12 @@
 """
 canary_75_real_weld: 焊死那 25%，让 3x 复现真正涨分进 fitness.json
-管道: astlocator → readpack → intentpatch → patchfitroom(3闸全过) → 3x复现 → 真分入fitness.json
+管道: astlocator → readpack → intentpatch → patchfitroom(3闸全过) → 3x复现 → reproduce验证 → 真分入fitness.json
 """
 import json
 import time
 import random
+import subprocess
+import sys
 from pathlib import Path
 
 from crab import Crab
@@ -12,6 +14,27 @@ from astlocator import ASTLocator
 from readpack import ReadPack
 from intentpatch import IntentPatch
 from patchfitroom import PatchFitRoom
+
+
+def run_reproduce_verification() -> bool:
+    """调用 reproduce_canary_3x.py 进行真复现验证"""
+    reproduce_script = Path(__file__).parent / "reproduce_canary_3x.py"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(reproduce_script)],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        passed = result.returncode == 0
+        if passed:
+            log("reproduce_canary_3x.py 验证通过 ✅")
+        else:
+            log(f"reproduce_canary_3x.py 验证失败: {result.stderr}")
+        return passed
+    except Exception as e:
+        log(f"reproduce_canary_3x.py 调用异常: {e}")
+        return False
 
 
 def log(msg):
@@ -182,8 +205,18 @@ def main():
     log(f"=== 最终结果: overall_avg_fitness_delta={overall_avg:.3f} ===")
     
     # 最终确认写入
-    if overall_avg > 0.1:
-        log("✅ canary 75% 那 25% 真焊上了——适应度真涨!")
+    fitness_path = Path("fitness.json")
+    if fitness_path.exists():
+        with open(fitness_path) as f:
+            final_data = json.load(f)
+        weld_count = final_data.get("weld_count", 0)
+        total_delta = final_data.get("total_delta", 0.0)
+        log(f"fitness.json 汇总: weld_count={weld_count} total_delta={total_delta:.3f}")
+
+    if overall_avg > 0.1 and weld_count > 0:
+        log("✅ canary 75% 那 25% 真焊上了——适应度真涨、分已入账!")
+    elif overall_avg > 0.1:
+        log("⚠️ 适应度涨了但 reproduce 验证未通过，尚未入账")
     else:
         log("⚠️  适应度涨幅不足，需要更多试验")
 
