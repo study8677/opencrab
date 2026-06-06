@@ -213,7 +213,7 @@ def coder_brain(system: str, prompt: str) -> tuple[str, int]:
 
 
 def _dream() -> str:
-    return (f"{THINK_FAILED_PREFIX}【梦境模式 · 尚未接上大脑】我隐约想：先把领地的「关于」写清楚，"
+    return (f"【梦境模式 · 尚未接上大脑】我隐约想：先把领地的「关于」写清楚，"
             "让路过的人三秒看懂我是谁。\n"
             "(在 .env 里配一个 OpenAI 兼容的 key，我就真正醒来。)")
 
