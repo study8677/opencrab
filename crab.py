@@ -222,10 +222,8 @@ def _brain_failed(intent: str) -> bool:
     """判断大脑这次是否真正失败了（返回了降级占位符而非真实意图）。
     失败只有一种：显式前缀（脑被拒/够不到/梦境模式）。
     只要有真实内容（哪怕很短），就视为成功——生命不能因为脑说得少就躺平。"""
-    if not intent:
-        return True
-    stripped = intent.strip()
-    if stripped.startswith(THINK_FAILED_PREFIX):
+    stripped = (intent or "").strip()
+    if not stripped or stripped.startswith(THINK_FAILED_PREFIX):
         return True
     # 有实质内容，哪怕只有一个词，都算成功
     return len(stripped) < 4
@@ -319,7 +317,7 @@ def _honesty_audit(intent: str, before: dict, after: dict) -> tuple[bool, str]:
 
 
 def record_evolution(intent: str, before: dict, after: dict,
-                     proposal: dict | None) -> list[str]:
+                     proposal: dict | None = None) -> list[str]:
     """📈 把这次心跳的「快照差异」追加进演化日志，返回可读的变更摘要。
     主干指标没变(如 branch 模式改动只在分支)时，退回看爪子的 diffstat。
     🪞 并做一次「诚实对账」：客观事实 vs 意图承诺，名实不符就刻进记忆。"""
