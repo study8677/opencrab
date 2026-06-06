@@ -95,18 +95,23 @@ class Canary:
         try:
             with open(fp) as f:
                 data = json.load(f)
-            # 基本检查
-            return "pass_rate" in data or "score" in data
+            # 增强检查：必须同时有 key 和有效数值
+            score = data.get("pass_rate") or data.get("score")
+            if score is None:
+                return False
+            # 有效分数范围 [0, 100]
+            return isinstance(score, (int, float)) and 0 <= score <= 100
         except Exception:
             return False
     
     def _check_recent_activity(self) -> bool:
         """检查最近有活动"""
-        # 简单检查 evidence 目录有内容
+        # 检查 evidence 目录有内容
         evidence_dir = REPO_ROOT / "evidence" / "baseline"
         if not evidence_dir.exists():
             return False
-        return len(list(evidence_dir.iterdir())) >= 0  # 总是返回 True
+        entries = list(evidence_dir.iterdir())
+        return len(entries) > 0  # 至少有一个记录才认为有活动
 
 
 if __name__ == "__main__":
