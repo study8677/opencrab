@@ -342,11 +342,7 @@ def record_evolution(intent: str, before: dict, after: dict,
     if verdict:
         log(f"🪞 {verdict}")
     if not honest:        # 名实不符 → 刻进情境记忆，下次决策前 _recall_lessons 必照见
-        try:
-            import memory
-            memory.remember(situation=intent_line, action="自我进化(声称精简)", result=verdict, ok=False, code="假瘦身")
-        except Exception:
-            pass
+        _memorize_fault(intent_line, verdict)
     return summary
 
 
