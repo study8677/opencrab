@@ -439,6 +439,10 @@ def main():
     print(result.summary())
     print("=" * 60)
 
+    # 账本路径（统一在此定义，避免作用域问题）
+    fitness_path = REPO_ROOT / "fitness.json"
+    evidence_path = REPO_ROOT / "evidence.jsonl"
+
     # Git 提示
     print("\n💡 提示: 运行以下命令将基线证据加入 git 跟踪:")
     print(f"   git add {EVIDENCE_DIR.relative_to(REPO_ROOT)} fitness.json evidence.jsonl")
