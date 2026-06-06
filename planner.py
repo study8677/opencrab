@@ -119,13 +119,73 @@ def _update_ledger_entry(ledger_content: str, project_name: str, decision: str) 
     return ledger_content
 
 
+def _find_roadmap() -> Optional[str]:
+    """Find the git-tracked ROADMAP.md. Searches upward from this file."""
+    search_paths = [
+        Path(__file__).parent / "ROADMAP.md",
+        Path(__file__).parent.parent / "ROADMAP.md",
+        Path(__file__).parent.parent.parent / "ROADMAP.md",
+        "ROADMAP.md",
+        "../ROADMAP.md",
+    ]
+    for p in search_paths:
+        p = Path(p)
+        if p.exists() and p.is_file():
+            return str(p)
+    return None
+
+
+def read_roadmap() -> str:
+    """
+    Read the public roadmap. This is the FIRST thing read before each session.
+    Returns the roadmap content, or a fallback message if not found.
+    """
+    roadmap_path = _find_roadmap()
+    if roadmap_path and os.path.exists(roadmap_path):
+        try:
+            with open(roadmap_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            pass
+    # Fallback: return empty but log
+    return ""
+
+
+def _summarize_roadmap(roadmap_content: str) -> str:
+    """Extract a human-readable summary of active mountains from roadmap."""
+    if not roadmap_content.strip():
+        return "⚠️ ROADMAP.md 未找到或为空。"
+
+    lines = ["=== 当前山头（每拍必看）===\n"]
+    in_mountains = False
+    for line in roadmap_content.split("\n"):
+        if "## 当前山头" in line or "Active Mountains" in line.lower():
+            in_mountains = True
+            continue
+        if in_mountains:
+            if line.startswith("##"):
+                break
+            if line.strip():
+                lines.append(line)
+    if len(lines) == 1:
+        lines.append("(暂无活跃山头)")
+    return "\n".join(lines)
+
+
 def gate_continuity(
     ledger_path: Optional[str] = None,
     dry_run: bool = False,
     auto_decision: Optional[str] = None,
+    require_roadmap: bool = True,
 ) -> dict:
     """
     Gate that enforces project continuity review before each session.
+
+    ⚡ 焊死闸门逻辑：
+    - 必须读取 ROADMAP.md（强制）
+    - 必须检查项目账（强制）
+    - 有未竟项目时必须做出决策（强制）
+    - 只有在没有未竟项目且 ROADMAP 可读时才能"放行"
 
     Args:
         ledger_path: Path to 续旧还是开新 ledger file.
@@ -133,13 +193,32 @@ def gate_continuity(
         dry_run: If True, only show the review without blocking.
         auto_decision: 'continue_all' | 'archive_all' | None
                        If set, applies decision to all entries automatically.
+        require_roadmap: If True, ROADMAP.md must be readable or it's a BLOCK.
 
     Returns:
         dict with keys:
             - decisions: {project_name: decision}
             - ledger_updated: bool (whether ledger was modified)
-            - skipped: bool (user chose to skip)
+            - blocked: bool (True = gate did NOT pass, must handle before planning)
+            - reason: str (why blocked, if any)
+            - roadmap_content: str (the roadmap that was read)
     """
+    # ============ 强制读取 ROADMAP ============
+    roadmap_content = read_roadmap()
+    roadmap_summary = _summarize_roadmap(roadmap_content)
+
+    if require_roadmap and not roadmap_content.strip():
+        return {
+            "decisions": {},
+            "ledger_updated": False,
+            "blocked": True,
+            "reason": "ROADMAP.md_missing_or_empty",
+            "roadmap_content": "",
+            "roadmap_summary": roadmap_summary,
+            "message": "🚫 闸门未通过：ROADMAP.md 未找到或为空。请先创建 ROADMAP.md 并至少填入当前山头。",
+        }
+
+    # ============ 找项目账 ============
     if ledger_path is None:
         # Try default location
         default_paths = [
@@ -151,127 +230,209 @@ def gate_continuity(
             if os.path.exists(p):
                 ledger_path = p
                 break
-        else:
-            return {
-                "decisions": {},
-                "ledger_updated": False,
-                "skipped": True,
-                "reason": "no_ledger_found",
-            }
 
-    if not os.path.exists(ledger_path):
-        return {
-            "decisions": {},
-            "ledger_updated": False,
-            "skipped": True,
-            "reason": "ledger_not_found",
-        }
+    # ============ 分析项目账 ============
+    if ledger_path and os.path.exists(ledger_path):
+        ledger_content = _read_project_ledger(ledger_path)
+        entries = _parse_ledger_entries(ledger_content)
+        incomplete = [e for e in entries if e["status"] in ("进行中", "待定")]
+    else:
+        ledger_content = ""
+        incomplete = []
 
-    ledger_content = _read_project_ledger(ledger_path)
-    entries = _parse_ledger_entries(ledger_content)
-    incomplete = [e for e in entries if e["status"] in ("进行中", "待定")]
-
+    # ============ 无未竟项目 → 放行（但先展示山头摘要） ============
     if not incomplete:
         return {
             "decisions": {},
             "ledger_updated": False,
-            "skipped": False,
+            "blocked": False,
             "reason": "no_incomplete_projects",
+            "roadmap_content": roadmap_content,
+            "roadmap_summary": roadmap_summary,
+            "message": f"✅ 闸门通过：无未竟项目。\n\n{roadmap_summary}",
         }
 
+    # ============ 有未竟项目 → 必须决策（焊死的闸） ============
     decisions = {}
 
     if dry_run:
         print(_render_ledger_review(incomplete))
-        return {"decisions": {}, "ledger_updated": False, "skipped": False, "preview": True}
+        return {
+            "decisions": {},
+            "ledger_updated": False,
+            "blocked": False,  # preview only
+            "preview": True,
+            "roadmap_content": roadmap_content,
+            "roadmap_summary": roadmap_summary,
+        }
 
     if auto_decision == "continue_all":
         decisions = {e["name"]: "续推" for e in incomplete}
     elif auto_decision == "archive_all":
         decisions = {e["name"]: "封存" for e in incomplete}
     else:
-        # Interactive mode - in practice, this would be handled by CLI/HUD
-        # Here we return the review prompt for external consumption
-        print(_render_ledger_review(incomplete))
+        # Interactive mode - THIS IS THE WELDED GATE
+        # In interactive mode we return and let external UI handle the prompt
+        # But we mark blocked=True until a decision is made
         return {
             "decisions": {},
             "ledger_updated": False,
-            "skipped": False,
+            "blocked": True,
+            "reason": "decision_required",
             "review_prompt": _render_ledger_review(incomplete),
             "entries": incomplete,
+            "roadmap_content": roadmap_content,
+            "roadmap_summary": roadmap_summary,
+            "message": (
+                f"🚫 闸门未通过：有 {len(incomplete)} 个未竟项目。\n"
+                f"必须做出决定后才能继续规划。\n\n"
+                f"当前山头：\n{roadmap_summary}\n\n"
+                f"未竟项目：\n{_render_ledger_review(incomplete)}"
+            ),
         }
 
-    # Apply decisions to ledger
+    # ============ 应用决策到项目账 ============
     updated_content = ledger_content
     for name, decision in decisions.items():
         updated_content = _update_ledger_entry(updated_content, name, decision)
 
-    if updated_content != ledger_content:
+    if updated_content != ledger_content and ledger_path:
         with open(ledger_path, "w", encoding="utf-8") as f:
             f.write(updated_content)
-        return {
-            "decisions": decisions,
-            "ledger_updated": True,
-            "skipped": False,
-        }
 
-    return {"decisions": decisions, "ledger_updated": False, "skipped": False}
+    return {
+        "decisions": decisions,
+        "ledger_updated": updated_content != ledger_content,
+        "blocked": False,
+        "roadmap_content": roadmap_content,
+        "roadmap_summary": roadmap_summary,
+        "message": f"✅ 闸门通过。决策已应用。\n\n当前山头：\n{roadmap_summary}",
+    }
 
 
 def plan_with_continuity_gate(
     task: str,
     ledger_path: Optional[str] = None,
+    require_roadmap: bool = True,
     **kwargs,
 ) -> dict:
     """
     Main entry point: enforce continuity gate, then proceed with planning.
 
-    This is the "weld" - before planning, the gate must be passed.
+    ⚡ 这是焊死的闸门：
+    1. 必须先读取 ROADMAP.md（显示当前山头）
+    2. 必须检查项目账
+    3. 有未竟项目时必须做出续旧/封存决策
+    4. 只有闸门完全通过才能调用 crab.plan()
+
+    这个函数是 self-mod 的核心锚点——确保每次规划都被山头牵着深耕，
+    不再被惯性推着换新点子。
+
+    Args:
+        task: The planning task.
+        ledger_path: Path to project ledger. Defaults to state/projects/项目账.md.
+        require_roadmap: If True, ROADMAP.md must be readable or planning is blocked.
+        **kwargs: Additional args passed to gate_continuity and crab.plan.
+
+    Returns:
+        dict with planning result, or blocked status if gate not passed.
     """
-    gate_result = gate_continuity(ledger_path=ledger_path, **kwargs)
+    # Pass require_roadmap to the gate
+    gate_result = gate_continuity(
+        ledger_path=ledger_path,
+        require_roadmap=require_roadmap,
+        **kwargs,
+    )
 
-    # If gate blocked (no decision made), return early
-    if gate_result.get("skipped") and not gate_result.get("decisions"):
-        if gate_result.get("reason") in ("no_incomplete_projects", "no_ledger_found"):
-            # Clear to proceed
-            pass
-        else:
-            return {
-                "blocked": True,
-                "reason": gate_result.get("reason", "unknown"),
-                "gate_result": gate_result,
-            }
+    # ============ 闸门检查 ============
+    if gate_result.get("blocked"):
+        # Gate NOT passed - cannot proceed with planning
+        return {
+            "blocked": True,
+            "reason": gate_result.get("reason", "unknown"),
+            "gate_result": gate_result,
+            "message": gate_result.get("message", "闸门未通过"),
+            "roadmap_summary": gate_result.get("roadmap_summary", ""),
+        }
 
+    # ============ 闸门通过 → 执行规划 ============
     # Import here to avoid circular
     try:
         from crab import plan
-        return plan(task, **kwargs)
+        plan_result = plan(task, **kwargs)
+        # Attach gate info to the result
+        plan_result["_gate"] = {
+            "passed": True,
+            "roadmap_summary": gate_result.get("roadmap_summary", ""),
+            "decisions": gate_result.get("decisions", {}),
+            "ledger_updated": gate_result.get("ledger_updated", False),
+        }
+        return plan_result
     except ImportError:
-        # Fallback: just return the gate result
+        # Fallback: return gate result with note
         return {
             "blocked": False,
             "gate_result": gate_result,
             "task": task,
-            "note": "crab.plan not available, continuity gate passed",
+            "note": "crab.plan not available, continuity gate passed but planning skipped",
         }
 
 
 if __name__ == "__main__":
     import sys
 
+    def print_result(label: str, result: dict):
+        print(f"\n{'='*60}")
+        print(f"  {label}")
+        print(f"{'='*60}")
+        blocked = result.get("blocked", False)
+        status = "🚫 阻塞" if blocked else "✅ 通过"
+        print(f"状态: {status}")
+        if result.get("reason"):
+            print(f"原因: {result['reason']}")
+        if result.get("message"):
+            print(f"\n{result['message']}")
+        if result.get("decisions"):
+            print(f"\n决策: {result['decisions']}")
+        if result.get("roadmap_summary"):
+            print(f"\n{result['roadmap_summary']}")
+        print()
+
     if len(sys.argv) > 1:
         if sys.argv[1] == "--review":
             result = gate_continuity(dry_run=True)
-            print(result)
+            print_result("DRY RUN 预览", result)
         elif sys.argv[1] == "--continue-all":
             result = gate_continuity(auto_decision="continue_all")
-            print(f"Decisions: {result}")
+            print_result("AUTO: 续推所有", result)
         elif sys.argv[1] == "--archive-all":
             result = gate_continuity(auto_decision="archive_all")
-            print(f"Decisions: {result}")
+            print_result("AUTO: 封存所有", result)
+        elif sys.argv[1] == "--roadmap":
+            content = read_roadmap()
+            print(f"\n{'='*60}")
+            print("  ROADMAP.md 内容")
+            print(f"{'='*60}")
+            if content:
+                print(content)
+            else:
+                print("⚠️ ROADMAP.md 未找到")
+        elif sys.argv[1] == "--plan":
+            # Full flow: gate → plan
+            if len(sys.argv) < 3:
+                print("用法: python planner.py --plan '<task>'")
+                sys.exit(1)
+            task = " ".join(sys.argv[2:])
+            result = plan_with_continuity_gate(task)
+            if result.get("blocked"):
+                print_result("⚠️ 规划被闸门阻塞", result)
+            else:
+                print_result("✅ 规划成功", result)
+                if result.get("note"):
+                    print(f"注: {result['note']}")
         else:
             result = gate_continuity()
-            print(result)
+            print_result("闸门检查", result)
     else:
         result = gate_continuity()
-        print(result)
+        print_result("闸门检查", result)
