@@ -1,22 +1,58 @@
 #!/usr/bin/env python3
-"""快速验证：state/projects/ 是否被 git 跟踪"""
+"""快速核真 git 跟踪状态"""
 import subprocess
-import os
+import pathlib
 
-def check_tracking(path):
-    """检查路径是否被 git 跟踪"""
-    # 先检查是否被忽略
-    r1 = subprocess.run(['git', 'check-ignore', '-v', path], capture_output=True)
-    ignored = r1.returncode == 0
-    
-    # 再检查是否被跟踪
-    r2 = subprocess.run(['git', 'ls-files', path], capture_output=True, text=True)
-    tracked = bool(r2.stdout.strip())
-    
-    return ignored, tracked
+def run(cmd):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
-# 检查链
-for path in ['state/', 'state/projects/', 'state/projects/项目账.md']:
-    ignored, tracked = check_tracking(path)
-    status = "✅ tracked" if tracked else ("🚫 ignored" if ignored else "❌ not exist")
-    print(f"{status}: {path}")
+def main():
+    # 1. gitignore 中 state 条目
+    gi = pathlib.Path(".gitignore")
+    if gi.exists():
+        lines = gi.read_text().splitlines()
+        state_lines = [(i+1, l) for i, l in enumerate(lines) if "state" in l.lower()]
+        print(f"=== .gitignore 中 state 条目 ===")
+        if state_lines:
+            for i, l in state_lines:
+                print(f"  行 {i}: {l}")
+        else:
+            print("  ❌ 没有 state 相关条目")
+        
+        # 检查 projects 条目
+        projects_lines = [(i+1, l) for i, l in enumerate(lines) if "projects" in l.lower()]
+        print(f"\n=== .gitignore 中 projects 条目 ===")
+        if projects_lines:
+            for i, l in projects_lines:
+                print(f"  行 {i}: {l}")
+        else:
+            print("  ⚠️  没有 projects 相关条目（可能被通配符覆盖）")
+    
+    # 2. git 跟踪的 files
+    r = run("git ls-files 2>/dev/null")
+    all_files = [f for f in r.stdout.strip().split("\n") if f]
+    
+    state_files = [f for f in all_files if "state" in f.lower()]
+    projects_files = [f for f in all_files if "projects" in f.lower()]
+    
+    print(f"\n=== git 跟踪情况 ===")
+    print(f"  总文件数: {len(all_files)}")
+    print(f"  state 相关: {len(state_files)}")
+    print(f"  projects 相关: {len(projects_files)}")
+    
+    for f in projects_files:
+        print(f"    {f}")
+    
+    # 3. 根因
+    print(f"\n=== 根因诊断 ===")
+    if state_files:
+        print(f"⚠️  git 仍在跟踪 {len(state_files)} 个 state 相关文件")
+        print("   这意味着 .gitignore 的 state 条目没生效")
+    else:
+        print("✅ git 没有跟踪 state 文件（.gitignore 生效了）")
+    
+    if not projects_files:
+        print("⚠️  git 没有跟踪 projects 文件——可能被忽略了")
+
+if __name__ == "__main__":
+    main()

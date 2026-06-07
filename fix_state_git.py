@@ -1,65 +1,56 @@
 #!/usr/bin/env python3
-"""修复 state/ 目录的 git 忽略问题"""
-import subprocess
-import os
-import re
+"""修复 .gitignore 让 state/ 被正确忽略"""
+import pathlib
 
-def run(cmd, check=True):
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if check and result.returncode != 0:
-        print(f"命令失败: {cmd}")
-        print(f"stderr: {result.stderr}")
-    return result.stdout.strip(), result.stderr.strip(), result.returncode
-
-# 读取 .gitignore
-with open('.gitignore', 'r') as f:
-    content = f.read()
-
-lines = content.split('\n')
-new_lines = []
-removed = []
-for line in lines:
-    # 匹配包含 state 的非注释行（可能是 state/ 或 state 或 /state）
-    if re.match(r'^\s*state[/]?\s*$', line) or \
-       re.match(r'^\s*/state[/]?\s*$', line) or \
-       re.match(r'^\s*state/\*\s*$', line):
-        removed.append(line)
-        continue
-    new_lines.append(line)
-
-if removed:
-    print(f"找到并移除 {len(removed)} 条 state 相关规则:")
-    for r in removed:
-        print(f"  - '{r}'")
+def main():
+    gi = pathlib.Path(".gitignore")
     
-    new_content = '\n'.join(new_lines)
-    # 确保末尾有换行
-    if not new_content.endswith('\n'):
-        new_content += '\n'
+    print("=== 检查 .gitignore 当前状态 ===")
     
-    with open('.gitignore', 'w') as f:
-        f.write(new_content)
-    print("\n已更新 .gitignore")
-else:
-    print("未找到需要移除的 state 规则")
+    if not gi.exists():
+        print("❌ .gitignore 不存在，先创建")
+        gi.write_text("state/\n")
+        print("✅ 已创建 .gitignore 并写入 'state/'")
+        return
+    
+    lines = gi.read_text().splitlines()
+    print(f"当前 {len(lines)} 行:")
+    for i, l in enumerate(lines, 1):
+        print(f"  {i:2}: {l}")
+    
+    # 检查第 11 行
+    print(f"\n=== 核真 .gitignore 第 11 行 ===")
+    if len(lines) >= 11:
+        line11 = lines[10].strip()
+        print(f"第 11 行: {repr(line11)}")
+        if line11 == "state/" or line11 == "state":
+            print("✅ 第 11 行正确忽略 state/")
+            return
+        else:
+            print(f"❌ 第 11 行不是 'state/'，实际是: {repr(line11)}")
+            print("需要修复")
+    else:
+        print(f"❌ 只有 {len(lines)} 行，不够 11 行")
+        print("需要添加 state/ 条目")
+    
+    # 修复方案：添加 state/ 到 .gitignore
+    state_exists = any("state" in l.strip() and not l.strip().startswith("#") 
+                       for l in lines)
+    
+    if not state_exists:
+        print("\n=== 执行修复 ===")
+        new_lines = lines + ["state/"]
+        gi.write_text("\n".join(new_lines) + "\n")
+        print("✅ 已添加 'state/' 到 .gitignore 末尾")
+        
+        # 验证
+        new_content = gi.read_text().splitlines()
+        print(f"\n修复后共 {len(new_content)} 行:")
+        for i, l in enumerate(new_content, 1):
+            marker = " ◄◄◄ 行 11" if i == 11 else ""
+            print(f"  {i:2}: {l}{marker}")
+    else:
+        print("⚠️  state 相关条目已存在，无需添加")
 
-# 提交更改
-print("\n=== 提交 .gitignore 修改 ===")
-run("git add .gitignore")
-out, err, _ = run("git diff --cached --stat")
-print(f"git diff --cached: {out}")
-
-# 检查 state/ 是否存在
-if os.path.isdir('state'):
-    print("\n=== 添加 state/ 目录 ===")
-    # 强制添加（忽略 ignore 规则）
-    run("git add -f state/")
-    out, err, _ = run("git status --short state/")
-    print(f"state/ 状态: {out}")
-else:
-    print("\nstate/ 目录不存在，跳过添加")
-
-# 最终状态
-print("\n=== 最终状态 ===")
-out, err, _ = run("git status --short")
-print(out)
+if __name__ == "__main__":
+    main()
