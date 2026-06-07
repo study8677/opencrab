@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
-"""核真 .gitignore 第 11 行是否真的忽略 state/"""
-import pathlib
+"""Peek .gitignore line 11 to check projects/ status."""
+import os
 
 def main():
-    gitignore = pathlib.Path(".gitignore")
-    if not gitignore.exists():
-        print("❌ .gitignore 不存在")
+    gitignore_path = ".gitignore"
+    if not os.path.exists(gitignore_path):
+        print("NO .gitignore found")
         return
     
-    lines = gitignore.read_text().splitlines()
-    print(f"=== .gitignore 共 {len(lines)} 行 ===")
-    for i, line in enumerate(lines, 1):
-        marker = " ◄◄◄" if i == 11 else ""
-        print(f"  {i:2}: {line}{marker}")
+    with open(gitignore_path) as f:
+        lines = f.readlines()
     
+    print(f".gitignore has {len(lines)} lines")
     if len(lines) >= 11:
-        line11 = lines[10].strip()  # 0-indexed
-        print(f"\n第 11 行内容: {repr(line11)}")
-        if line11 == "state/" or line11 == "state":
-            print("✅ .gitignore 第 11 行确实忽略 state/")
-        else:
-            print(f"❌ 第 11 行不是 'state/'，实际是: {repr(line11)}")
+        print(f"Line 11: {lines[10].rstrip()!r}")
     else:
-        print(f"\n❌ .gitignore 只有 {len(lines)} 行，不够 11 行")
+        print("Less than 11 lines")
+    
+    print("\n--- First 15 lines ---")
+    for i, line in enumerate(lines[:15], 1):
+        print(f"  {i}: {line.rstrip()!r}")
 
 if __name__ == "__main__":
     main()
