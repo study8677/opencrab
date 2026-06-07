@@ -96,14 +96,53 @@ def main():
         
         # 判定：avg 比当前 fitness.json 高 0.01 以上才算真涨
         if delta_vs_fitness > 0.01:
-            print("\n✅ 结论: 真涨了！应该焊 fitness.json")
-            print("   建议: 运行 update_fitness_from_run 或类似脚本")
+            print("\n✅ 结论: 真涨了！焊 fitness.json")
+            # 收官第3拍：自动 commit fitness.json
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            commit_msg = f"canary_75→80: fitness {current_f} → {avg:.4f} ({timestamp})"
+            print(f"   → 执行: git add fitness.json && git commit -m '{commit_msg}'")
+            subprocess.run(["git", "add", "fitness.json"], check=False)
+            result = subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                print(f"   ✅ git commit 成功")
+                print(f"   提交信息: {commit_msg}")
+            else:
+                print(f"   ⚠️ git commit 失败: {result.stderr[:200]}")
         elif delta_vs_fitness < -0.01:
-            print("\n❌ 结论: 没涨反而跌了！需要尸检换山头")
-            print("   建议: 先检查 autopsy 相关脚本")
+            print("\n❌ 结论: 没涨反而跌了！进入 recovery_drill")
+            # 收官第3拍：自动调用 recovery_drill
+            print("   → 执行: python recovery_drill.py")
+            subprocess.run(
+                [sys.executable, "recovery_drill.py"],
+                capture_output=True, text=True, timeout=120
+            )
+            print("   ✅ recovery_drill 已触发")
         else:
-            print("\n⚠️  结论: 持平，不确定有没有效")
-            print("   建议: 再多跑几次或检查其他指标")
+            print("\n⚠️  结论: 持平，再跑一次确认")
+            # 再跑第4次作为决胜
+            print("   → 再跑第 4 次...")
+            score = run_single_fitness()
+            if score is not None:
+                results.append(score)
+                avg2 = sum(results) / len(results)
+                delta2 = avg2 - current_f
+                print(f"   第4次得分: {score}, 新均值: {avg2:.4f}")
+                if delta2 > 0.01:
+                    print("   ✅ 第4次确认真涨！焊 fitness.json")
+                    import datetime
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    commit_msg = f"canary_75→80: fitness {current_f} → {avg2:.4f} (4x确认 {timestamp})"
+                    subprocess.run(["git", "add", "fitness.json"], check=False)
+                    subprocess.run(["git", "commit", "-m", commit_msg], capture_output=True)
+                    print(f"   ✅ git commit 成功: {commit_msg}")
+                else:
+                    print("   ❌ 确认未涨，进入 recovery_drill")
+                    subprocess.run([sys.executable, "recovery_drill.py"], capture_output=True, timeout=120)
+                    print("   ✅ recovery_drill 已触发")
             
     except (TypeError, ValueError):
         print(f"\n⚠️  无法比较 (fitness={current_score}, baseline={baseline_score})")
