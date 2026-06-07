@@ -341,6 +341,72 @@ python run_fitness_baseline.py --output-md  # 重跑并更新本文件
     return md_path
 
 
+def update_docs_index():
+    """同步 docs/index.html 的真实数字"""
+    docs_path = REPO_ROOT / "docs" / "index.html"
+    if not docs_path.exists():
+        return None
+    
+    # 获取真实数字
+    py_files = list(REPO_ROOT.glob("*.py"))
+    py_files = [f for f in py_files if "__pycache__" not in str(f) and not f.name.startswith("test_")]
+    module_count = len(py_files)
+    
+    import subprocess
+    commit_count = None
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD"],
+            capture_output=True, text=True, cwd=REPO_ROOT
+        )
+        if result.returncode == 0:
+            commit_count = int(result.stdout.strip())
+    except:
+        pass
+    
+    with open(docs_path, encoding="utf-8") as f:
+        content = f.read()
+    
+    original = content
+    import re
+    
+    # 更新模块数
+    content = re.sub(
+        r'(\d+[\+\]?)\s+(?:modules|modules)',
+        f'{module_count} modules',
+        content,
+        flags=re.IGNORECASE
+    )
+    content = re.sub(
+        r'modules[:\s]+(\d+[\+\]?)',
+        f'modules: {module_count}',
+        content,
+        flags=re.IGNORECASE
+    )
+    
+    # 更新 commit 数
+    if commit_count:
+        content = re.sub(
+            r'(\d+)\s+(?:commits|commits)',
+            f'{commit_count} commits',
+            content,
+            flags=re.IGNORECASE
+        )
+        content = re.sub(
+            r'commits[:\s]+(\d+)',
+            f'commits: {commit_count}',
+            content,
+            flags=re.IGNORECASE
+        )
+    
+    if content != original:
+        with open(docs_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"  → docs/index.html 已刷真实数字 ({module_count} modules, {commit_count} commits)")
+        return docs_path
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="真适应度基线评测")
     parser.add_argument("--quick", action="store_true", help="快速 smoke 级别评测")
@@ -433,6 +499,9 @@ def main():
     if args.output_md:
         md_path = save_state_md(result)
         print(f"  → {md_path} (git 可追踪的真锚)")
+
+    # === 自动刷 docs/index.html ===
+    docs_updated = update_docs_index()
 
     # 输出摘要
     print("\n" + "=" * 60)
