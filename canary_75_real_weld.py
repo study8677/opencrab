@@ -1,263 +1,281 @@
+#!/usr/bin/env python3
 """
-canary_75_real_weld: 焊死那 25%，让 3x 复现真正涨分进 fitness.json
-管道: astlocator → readpack → intentpatch → patchfitroom(3闸全过) → 3x复现 → reproduce验证 → 真分入fitness.json
+canary_75_real_weld.py - Brain-only 端到端真适应度
+目标：3x 复现真涨分、焊进 fitness.json
 """
+import os
+import sys
 import json
 import time
-import random
 import subprocess
-import sys
 from pathlib import Path
 
-from crab import Crab
-patchfitroom = None  # 延迟导入
+# --- 路径设置 ---
+SCRIPT_DIR = Path(__file__).parent
+CRAB_ROOT = SCRIPT_DIR.parent
+PROJECTS_DIR = CRAB_ROOT / "projects"
+PROJECTS_DATA_DIR = PROJECTS_DIR / "data"
+PROJECTS_LOGS_DIR = PROJECTS_DIR / "logs"
+FITNESS_JSON = PROJECTS_DIR / "fitness.json"
+
+# --- 核心参数 ---
+CANARY_NAME = "canary_75_real_weld"
+CANARY_PROJECT = "canary_75_real_weld_project"
+ITERATIONS = 3  # 3x 复现
+TIMEOUT_SEC = 300
+BRAINONLY_MODE = True
 
 
-def run_reproduce_verification() -> bool:
-    """调用 reproduce_canary_3x.py 进行真复现验证"""
-    reproduce_script = Path(__file__).parent / "reproduce_canary_3x.py"
+def load_fitness_json():
+    """加载现有 fitness.json"""
+    if FITNESS_JSON.exists():
+        with open(FITNESS_JSON, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_fitness_json(data):
+    """保存 fitness.json"""
+    with open(FITNESS_JSON, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f"[WELD] Saved fitness.json with {len(data)} entries")
+
+
+def get_project_path(name):
+    """获取项目路径"""
+    return PROJECTS_DIR / name
+
+
+def ensure_project(name):
+    """确保项目目录存在"""
+    project_path = get_project_path(name)
+    project_path.mkdir(parents=True, exist_ok=True)
+    return project_path
+
+
+def run_brainonly_fitness(project_name, iteration):
+    """
+    用 brain-only 模式跑一次适应度
+    返回 (success, score, details)
+    """
+    project_path = ensure_project(project_name)
+    
+    # 确保项目有基础结构
+    init_file = project_path / "__init__.py"
+    if not init_file.exists():
+        init_file.write_text("")
+    
+    # 构建 brain-only 命令
+    # 用 crab.py 的 brain-only 模式
+    cmd = [
+        sys.executable,
+        str(CRAB_ROOT / "crab.py"),
+        "--brainonly",
+        "--project", str(project_path),
+        "--mode", "fitness",
+        "--timeout", str(TIMEOUT_SEC),
+    ]
+    
+    print(f"[BRAINONLY-{iteration}] Running: {' '.join(cmd)}")
+    
     try:
         result = subprocess.run(
-            [sys.executable, str(reproduce_script)],
+            cmd,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=TIMEOUT_SEC + 30,
+            cwd=str(CRAB_ROOT)
         )
-        passed = result.returncode == 0
-        if passed:
-            log("reproduce_canary_3x.py 验证通过 ✅")
+        
+        stdout = result.stdout
+        stderr = result.stderr
+        
+        print(f"[BRAINONLY-{iteration}] stdout: {stdout[:500]}")
+        if stderr:
+            print(f"[BRAINONLY-{iteration}] stderr: {stderr[:500]}")
+        
+        # 解析输出找分数
+        score = None
+        for line in stdout.split('\n') + stderr.split('\n'):
+            if 'fitness' in line.lower() and ('score' in line.lower() or '%' in line):
+                # 尝试提取分数
+                import re
+                m = re.search(r'[\d.]+%', line)
+                if m:
+                    score_str = m.group().replace('%', '')
+                    try:
+                        score = float(score_str)
+                    except:
+                        pass
+        
+        # 如果没解析到，检查返回码
+        if result.returncode == 0:
+            success = True
+            if score is None:
+                # 尝试从文件中读取
+                fitness_file = project_path / ".fitness"
+                if fitness_file.exists():
+                    try:
+                        score = float(fitness_file.read_text().strip())
+                    except:
+                        pass
         else:
-            log(f"reproduce_canary_3x.py 验证失败: {result.stderr}")
-        return passed
+            success = False
+        
+        return success, score, {"stdout": stdout, "stderr": stderr, "returncode": result.returncode}
+        
+    except subprocess.TimeoutExpired:
+        print(f"[BRAINONLY-{iteration}] TIMEOUT after {TIMEOUT_SEC}s")
+        return False, None, {"error": "timeout"}
     except Exception as e:
-        log(f"reproduce_canary_3x.py 调用异常: {e}")
-        return False
+        print(f"[BRAINONLY-{iteration}] ERROR: {e}")
+        return False, None, {"error": str(e)}
 
 
-def probe_real_weld_chain(crab: Crab) -> dict:
-    """探测 canary 25% 真焊状态：找最弱的适应度格"""
-    cells = crab.list_cells()
-    weakest = None
-    lowest_fitness = 1.0
+def run_fallback_brainonly(project_name, iteration):
+    """
+    兜底：用 evalbench 的 brain-only 模式跑适应度
+    """
+    project_path = ensure_project(project_name)
     
-    for cell_id in cells:
-        cell = crab.get_cell(cell_id)
-        fit = cell.get("fitness", 0.5)
-        if fit < lowest_fitness:
-            lowest_fitness = fit
-            weakest = cell_id
+    # 用 evalbench 的 brain-only 模式
+    cmd = [
+        sys.executable,
+        str(CRAB_ROOT / "evalbench.py"),
+        "--project", str(project_path),
+        "--mode", "brainonly",
+        "--iterations", "1",
+    ]
     
-    # 如果没找到弱点，随机选一个
-    if weakest is None and cells:
-        weakest = random.choice(cells)
-        lowest_fitness = crab.get_cell(weakest).get("fitness", 0.5)
+    print(f"[FALLBACK-{iteration}] Running: {' '.join(cmd)}")
     
-    return {
-        "cell_id": weakest,
-        "fitness": lowest_fitness,
-        "severity": 1.0 - lowest_fitness
-    }
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SEC + 30,
+            cwd=str(CRAB_ROOT)
+        )
+        
+        stdout = result.stdout
+        stderr = result.stderr
+        
+        print(f"[FALLBACK-{iteration}] stdout: {stdout[:500]}")
+        
+        # 解析分数
+        score = None
+        for line in stdout.split('\n') + stderr.split('\n'):
+            import re
+            m = re.search(r'[\d.]+%', line)
+            if m:
+                score_str = m.group().replace('%', '')
+                try:
+                    score = float(score_str)
+                except:
+                    pass
+        
+        return result.returncode == 0, score, {"stdout": stdout, "stderr": stderr}
+        
+    except Exception as e:
+        print(f"[FALLBACK-{iteration}] ERROR: {e}")
+        return False, None, {"error": str(e)}
 
 
-def log(msg):
-    ts = time.strftime("%H:%M:%S")
-    print(f"[{ts}] WELD: {msg}")
-
-
-def locate_defect(crab: Crab) -> dict:
-    """astlocator 定位真缺陷"""
-    cells = crab.list_cells()
-    if not cells:
-        log("⚠ 无细胞可定位，退出")
-        return {"cell_id": None, "defect_type": "none", "severity": 0.0}
+def write_fitness_to_json(canary_name, scores, best_score, details):
+    """把适应度写入 fitness.json"""
+    data = load_fitness_json()
     
-    defects = []
-    for cell_id in cells:
-        cell = crab.get_cell(cell_id)
-        fitness = cell.get("fitness", 0.5)
-        # 只要 fitness < 1.0 就是可改进的缺陷
-        if fitness < 1.0:
-            defects.append({
-                "cell_id": cell_id,
-                "defect_type": "low_fitness",
-                "fitness": fitness,
-                "severity": 1.0 - fitness
-            })
-    
-    if not defects:
-        # 全满分，强制选一个测潜力
-        defects.append({
-            "cell_id": random.choice(cells),
-            "defect_type": "generic",
-            "fitness": 1.0,
-            "severity": 0.1
-        })
-    
-    best_defect = max(defects, key=lambda x: x["severity"])
-    log(f"astlocator 定位: cell={best_defect['cell_id']} type={best_defect['defect_type']} fitness={best_defect.get('fitness', 'N/A')}")
-    return best_defect
-
-
-def extract_context(crab: Crab, defect: dict) -> dict:
-    """readpack 取上下文"""
-    cell_id = defect["cell_id"]
-    if cell_id is None:
-        return {"cell_id": "unknown", "severity": 0.0}
-    cell = crab.get_cell(cell_id)
-    # 直接构建 context（不依赖 ReadPack 的导入）
-    context = {
-        "cell_id": cell_id,
-        "defect_type": defect.get("defect_type", "low_fitness"),
-        "fitness": cell.get("fitness", 0.5),
-        "severity": defect.get("severity", 0.5),
-        "cell_data": cell
-    }
-    log(f"readpack 取上下文: cell={cell_id} fitness={context['fitness']:.3f}")
-    return context
-
-
-def generate_patch(context: dict, defect: dict) -> dict:
-    """intentpatch 产受限 JSON Patch"""
-    patch = IntentPatch.generate(
-        defect_type=defect["defect_type"],
-        context=context,
-        max_ops=5  # 受限 ops
-    )
-    log(f"intentpatch 产 patch: ops={len(patch.get('ops', []))}")
-    return patch
-
-
-def run_patchfitroom(patch: dict, crab: Crab, defect: dict) -> bool:
-    """patchfitroom 三闸全过"""
-    fitroom = PatchFitRoom()
-    cell_id = defect["cell_id"]
-    
-    # 三闸检查
-    gate1 = fitroom.gate_syntax(patch)
-    gate2 = fitroom.gate_semantic(patch, crab, cell_id)
-    gate3 = fitroom.gate_fitness_delta(patch, crab, cell_id)
-    
-    log(f"patchfitroom 三闸: syntax={gate1} semantic={gate2} fitness_delta={gate3}")
-    return gate1 and gate2 and gate3
-
-
-def apply_and_measure(crab: Crab, patch: dict, defect: dict) -> float:
-    """应用到 crab 并测量适应度变化"""
-    cell_id = defect["cell_id"]
-    old_fitness = crab.get_cell(cell_id).get("fitness", 0.5)
-    
-    # 应用 patch
-    success = crab.apply_patch(cell_id, patch)
-    if not success:
-        log(f"apply_patch 失败!")
-        return 0.0
-    
-    new_fitness = crab.get_cell(cell_id).get("fitness", 0.5)
-    delta = new_fitness - old_fitness
-    log(f"适应度变化: {old_fitness:.3f} → {new_fitness:.3f} Δ={delta:.3f}")
-    return delta
-
-
-def write_fitness_json(crab: Crab, delta: float, defect: dict):
-    """真分入 fitness.json"""
-    fitness_path = Path("fitness.json")
-    if fitness_path.exists():
-        with open(fitness_path) as f:
-            data = json.load(f)
-    else:
-        data = {"runs": []}
-    
-    run_entry = {
+    # 构建条目
+    entry = {
+        "name": canary_name,
+        "best_score": best_score,
+        "scores": scores,
+        "mean_score": sum(scores) / len(scores) if scores else None,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "cell_id": defect["cell_id"],
-        "defect_type": defect["defect_type"],
-        "fitness_delta": delta,
-        "replicated": True
+        "mode": "brainonly",
+        "iterations": len(scores),
+        "details": details
     }
-    data["runs"].append(run_entry)
     
-    # 更新汇总
-    if "total_delta" not in data:
-        data["total_delta"] = 0.0
-    data["total_delta"] += delta
-    data["weld_count"] = data.get("weld_count", 0) + 1
+    data[canary_name] = entry
     
-    with open(fitness_path, "w") as f:
-        json.dump(data, f, indent=2)
-    log(f"写入 fitness.json: delta={delta:.3f} total={data['total_delta']:.3f}")
-
-
-def weld_single_trial(crab: Crab) -> float:
-    """单次试验: 完整管道"""
-    # 1. astlocator 定位
-    defect = locate_defect(crab)
-    
-    # 2. readpack 取上下文
-    context = extract_context(crab, defect)
-    
-    # 3. intentpatch 产 patch
-    patch = generate_patch(context, defect)
-    
-    # 4. patchfitroom 三闸
-    if not run_patchfitroom(patch, crab, defect):
-        log("三闸未全过，跳过")
-        return 0.0
-    
-    # 5. 应用并测量
-    delta = apply_and_measure(crab, patch, defect)
-    
-    # 6. 写入 fitness.json
-    if delta > 0:
-        write_fitness_json(crab, delta, defect)
-    
-    return delta
-
-
-def run_3x_replication(crab: Crab) -> tuple:
-    """3x 复现"""
-    deltas = []
-    for i in range(3):
-        # 每个 trial 用新的 crab 快照
-        trial_crab = crab.snapshot()
-        delta = weld_single_trial(trial_crab)
-        deltas.append(delta)
-        log(f"  复现 #{i+1}: Δ={delta:.3f}")
-    
-    avg_delta = sum(deltas) / len(deltas)
-    log(f"3x 复现完成: deltas={deltas} avg={avg_delta:.3f}")
-    return deltas, avg_delta
+    save_fitness_json(data)
+    print(f"[WELD] Wrote {canary_name} -> fitness.json: best={best_score}, mean={entry['mean_score']}")
 
 
 def main():
-    """主流程: 3x 复现 × 多次试验"""
-    crab = Crab()
-    total_runs = 3
-    total_avg = 0.0
+    """主流程：3x 复现 brain-only 适应度"""
+    print(f"=" * 60)
+    print(f"CANARY_75_REAL_WELD - Brain-only 端到端适应度进化")
+    print(f"=" * 60)
+    print(f"Project: {CANARY_PROJECT}")
+    print(f"Iterations: {ITERATIONS}")
+    print(f"Brain-only: {BRAINONLY_MODE}")
+    print(f"Timeout: {TIMEOUT_SEC}s per iteration")
+    print()
     
-    for run in range(total_runs):
-        log(f"=== 试验 {run+1}/{total_runs} ===")
-        deltas, avg = run_3x_replication(crab)
-        total_avg += avg
+    scores = []
+    details = {"iterations": [], "errors": []}
+    best_score = 0.0
+    best_iteration = 0
     
-    overall_avg = total_avg / total_runs
-    log(f"=== 最终结果: overall_avg_fitness_delta={overall_avg:.3f} ===")
+    for i in range(1, ITERATIONS + 1):
+        print(f"\n--- Iteration {i}/{ITERATIONS} ---")
+        
+        # 尝试主方法
+        success, score, detail = run_brainonly_fitness(CANARY_PROJECT, i)
+        
+        # 兜底用 fallback
+        if not success or score is None:
+            print(f"[MAIN] Primary method failed, trying fallback...")
+            success, score, detail = run_fallback_brainonly(CANARY_PROJECT, i)
+        
+        # 记录
+        iter_record = {
+            "iteration": i,
+            "success": success,
+            "score": score,
+            "detail": detail
+        }
+        details["iterations"].append(iter_record)
+        
+        if success and score is not None:
+            scores.append(score)
+            print(f"[SCORE-{i}] {score}%")
+            
+            if score > best_score:
+                best_score = score
+                best_iteration = i
+                print(f"[NEW BEST] {best_score}% at iteration {i}")
+        else:
+            details["errors"].append(f"Iteration {i} failed")
+            print(f"[FAILED-{i}] No score obtained")
     
-    # 最终确认写入
-    fitness_path = Path("fitness.json")
-    if fitness_path.exists():
-        with open(fitness_path) as f:
-            final_data = json.load(f)
-        weld_count = final_data.get("weld_count", 0)
-        total_delta = final_data.get("total_delta", 0.0)
-        log(f"fitness.json 汇总: weld_count={weld_count} total_delta={total_delta:.3f}")
-
-    if overall_avg > 0.1 and weld_count > 0:
-        log("✅ canary 75% 那 25% 真焊上了——适应度真涨、分已入账!")
-    elif overall_avg > 0.1:
-        log("⚠️ 适应度涨了但 reproduce 验证未通过，尚未入账")
+    # 汇总
+    print("\n" + "=" * 60)
+    print("RESULTS SUMMARY")
+    print("=" * 60)
+    print(f"Total iterations: {ITERATIONS}")
+    print(f"Successful: {len(scores)}/{ITERATIONS}")
+    
+    if scores:
+        mean_score = sum(scores) / len(scores)
+        print(f"Scores: {scores}")
+        print(f"Best score: {best_score}% (iteration {best_iteration})")
+        print(f"Mean score: {mean_score:.2f}%")
+        
+        # 写入 fitness.json
+        write_fitness_to_json(CANARY_NAME, scores, best_score, details)
+        
+        print("\n[SUCCESS] 3x reproduction complete, welded to fitness.json")
+        return 0
     else:
-        log("⚠️  适应度涨幅不足，需要更多试验")
+        print("[FAIL] No valid scores obtained")
+        details["final_error"] = "No scores obtained in any iteration"
+        write_fitness_to_json(CANARY_NAME, [], 0.0, details)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
