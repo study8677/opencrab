@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
-"""快速检查语法"""
+"""check_syntax.py — 检查 crab.py 语法正确性"""
 
-import py_compile
-import sys
+import py_compile, sys
+from pathlib import Path
 
-files = [
-    'canary_75_evolution.py',
-    'do_canary_readpack_brainonly_patch.py',
-    'execute_canary_75.py',
-    'go_canary_75.py',
-    'check_crab.py',
-]
-
-ok = True
-for f in files:
+def main():
+    crab = Path("crab.py")
+    if not crab.exists():
+        print("[syntax] crab.py 不存在")
+        return 1
     try:
-        py_compile.compile(f, doraise=True)
-        print(f"✓ {f}")
+        py_compile.compile(str(crab), doraise=True)
+        print("[syntax] ✅ crab.py 语法正确")
+        return 0
     except py_compile.PyCompileError as e:
-        print(f"✗ {f}: {e}")
-        ok = False
+        print(f"[syntax] ❌ 语法错误: {e}")
+        return 1
 
-sys.exit(0 if ok else 1)
+if __name__ == "__main__":
+    sys.exit(main())

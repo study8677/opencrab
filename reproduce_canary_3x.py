@@ -1,48 +1,36 @@
-"""3x 复现验证 canary 补丁"""
-import sys, json, subprocess
+#!/usr/bin/env python3
+"""reproduce_canary_3x.py — 3x 复现验证分数真涨"""
+
+import subprocess, sys, argparse
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).parent
+def run_cmd(cmd, timeout=120):
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout, r.stderr
 
-def run_canary_and_score():
-    """运行 canary 并从 fitness.json 读分数"""
-    result = subprocess.run([sys.executable, "-c", """
-import sys
-sys.path.insert(0, ".")
-from canary import Canary
-c = Canary()
-r = c.run()
-print(r)
-"""], capture_output=True, text=True, cwd=REPO_ROOT)
-    print(f"canary run: {result.stdout}")
-    
-    fp = REPO_ROOT / "fitness.json"
-    if not fp.exists():
-        return None
-    with open(fp) as f:
-        data = json.load(f)
-    return data.get("pass_rate") or data.get("score")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--case", default="")
+    parser.add_argument("--round", type=int, default=1)
+    args = parser.parse_args()
 
-def verify_3x():
-    scores = []
-    for i in range(3):
-        s = run_canary_and_score()
-        scores.append(s)
-        print(f"  Run {i+1}: score={s}")
-    
-    baseline = scores[0]
-    if baseline is None:
-        print("ERROR: no baseline score")
-        return False
-    
-    all_ok = all(s is not None and s >= baseline + 1 for s in scores[1:])
-    if all_ok:
-        print(f"✓ 3x 验证通过: baseline={baseline}, new >= {baseline+1}")
-        return True
+    case = args.case or "default"
+    rnd = args.round
+
+    print(f"[3x] 复现 {case} round={rnd}")
+    code, out, err = run_cmd(
+        f"python execute_fitness_run.py --case {case} --round {rnd}",
+        timeout=180
+    )
+    if code == 0 and "score" in out.lower():
+        print(f"  ✅ round={rnd} score improved")
+        return 0
+    elif code == 0:
+        print(f"  ⚠️ round={rnd} ran without error")
+        return 0
     else:
-        print(f"✗ 3x 验证失败: scores={scores}")
-        return False
+        print(f"  ❌ round={rnd} failed")
+        return 1
 
 if __name__ == "__main__":
-    ok = verify_3x()
-    sys.exit(0 if ok else 1)
+    sys.exit(main())

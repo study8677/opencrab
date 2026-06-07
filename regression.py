@@ -1,127 +1,37 @@
-"""
-regression.py - 回归测试模块
+#!/usr/bin/env python3
+"""regression.py — 回归检查：确保补丁不引入新问题"""
 
-确保现有功能不被破坏。
-"""
-from typing import Dict, Any, List, Optional
+import subprocess, sys, json
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).parent
+def run_cmd(cmd, timeout=120):
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout, r.stderr
 
+def main():
+    print("[regression] 检查回归...")
 
-class RegressionSuite:
-    """回归测试套件"""
-    
-    def __init__(self, quick: bool = False, modules: Optional[List[str]] = None):
-        self.quick = quick
-        self.modules = modules or []
-        self.passed = 0
-        self.failed = 0
-        self.total = 0
-    
-    def run(self) -> Dict[str, Any]:
-        """运行回归测试"""
-        tests = self._get_tests()
-        
-        for test_name, test_fn in tests:
-            self.total += 1
-            try:
-                if test_fn():
-                    self.passed += 1
-                else:
-                    self.failed += 1
-            except Exception as e:
-                self.failed += 1
-                print(f"  ❌ {test_name}: {e}")
-        
-        return {
-            "passed": self.passed,
-            "failed": self.failed,
-            "total": self.total
-        }
-    
-    def _get_tests(self):
-        """获取测试列表"""
-        tests = [
-            ("fitness_json_valid", self._test_fitness_json_valid),
-            ("readpack_returns_valid_data", self._test_readpack_returns_valid_data),
-            ("intentpatch_preserves_intent", self._test_intentpatch_preserves_intent),
-            ("patchfitroom_validates_patch", self._test_patchfitroom_validates_patch),
-        ]
-        
-        if not self.quick:
-            tests.extend([
-                ("crab_main_entry", self._test_crab_main_entry),
-                ("module_import_chain", self._test_module_import_chain),
-                ("state_persistence", self._test_state_persistence),
-            ])
-        
-        return tests
-    
-    def _test_fitness_json_valid(self) -> bool:
-        """测试 fitness.json 是有效的 JSON"""
-        import json
-        fp = REPO_ROOT / "fitness.json"
-        if not fp.exists():
-            return False
-        try:
-            with open(fp) as f:
-                data = json.load(f)
-            return isinstance(data, dict)
-        except Exception:
-            return False
-    
-    def _test_readpack_returns_valid_data(self) -> bool:
-        """测试 readpack 返回有效数据"""
-        try:
-            from readpack import read_project_state
-            state = read_project_state()
-            return isinstance(state, dict)
-        except Exception:
-            return False
-    
-    def _test_intentpatch_preserves_intent(self) -> bool:
-        """测试 intentpatch 保持意图"""
-        try:
-            from intentpatch import preserve_intent
-            # 基本测试：如果函数存在且可调用
-            return callable(preserve_intent)
-        except Exception:
-            return False
-    
-    def _test_patchfitroom_validates_patch(self) -> bool:
-        """测试 patchfitroom 验证补丁"""
-        try:
-            from patchfitroom import validate_patch
-            return callable(validate_patch)
-        except Exception:
-            return False
-    
-    def _test_crab_main_entry(self) -> bool:
-        """测试 crab 主入口"""
-        try:
-            import crab
-            return hasattr(crab, '__file__')
-        except Exception:
-            return False
-    
-    def _test_module_import_chain(self) -> bool:
-        """测试模块导入链"""
-        try:
-            import readpack
-            import intentpatch
-            import patchfitroom
-            return True
-        except Exception:
-            return False
-    
-    def _test_state_persistence(self) -> bool:
-        """测试状态持久化"""
-        state_dir = REPO_ROOT / "state" / "projects"
-        return state_dir.exists()
+    checks = [
+        ("语法", "python check_syntax.py"),
+        ("Fitness基线", "python do_real_fitness_baseline.py"),
+        ("Organ验证", "python organ_verification.py"),
+    ]
 
+    all_ok = True
+    for name, cmd in checks:
+        print(f"  [regression] {name}...", end="", flush=True)
+        code, out, err = run_cmd(cmd, timeout=300)
+        ok = code == 0
+        print(f" {'✅' if ok else '❌'}")
+        if not ok:
+            all_ok = False
+
+    if all_ok:
+        print("[regression] ✅ 无回归")
+        return 0
+    else:
+        print("[regression] ⚠️ 存在回归")
+        return 1
 
 if __name__ == "__main__":
-    suite = RegressionSuite()
-    result = suite.run()
-    print(f"Regression 结果: {result}")
+    sys.exit(main())
