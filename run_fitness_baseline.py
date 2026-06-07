@@ -453,7 +453,64 @@ def main():
     print(f"   → {fitness_path.relative_to(REPO_ROOT)}  (fitness.json)")
     print(f"   → {evidence_path}  (evidence.jsonl)")
 
-    return 0 if result.canary_pass_rate >= 0.75 else 1  # 核心判据：canary 75% 达标才算成功
+    # === 弱格自动检测 + brain-only 修复建议 ===
+    print("\n" + "=" * 60)
+    print("🔍 弱格检测：基于真实基线数据，定位此刻真最弱维度")
+    print("=" * 60)
+
+    dimensions = {
+        "arena":      {"passed": result.arena_passed,      "total": result.arena_total},
+        "boundaryeval": {"passed": result.boundary_passed, "total": result.boundary_total},
+        "regression": {"passed": result.regression_passed, "total": result.regression_total},
+        "canary":     {"passed": result.canary_passed,     "total": result.canary_total},
+    }
+
+    # 计算各维度 pass_rate，找真最弱
+    weakest_cell = None
+    weakest_rate = 1.0
+    cell_scores = {}
+
+    for name, d in dimensions.items():
+        rate = d["passed"] / max(d["total"], 1)
+        cell_scores[name] = rate
+        marker = " ◀◀◀ 真最弱" if rate < weakest_rate else ""
+        print(f"  {name:15s}: {d['passed']:3d}/{d['total']:3d} = {rate:.1%}{marker}")
+        if rate < weakest_rate:
+            weakest_rate = rate
+            weakest_cell = name
+
+    print(f"\n📌 结论：真最弱维度是「{weakest_cell}」，通过率 {weakest_rate:.1%}")
+
+    # 给出 brain-only 修复建议
+    if weakest_cell == "canary":
+        fix_script = "canary_75_real_weld.py"
+        fix_cmd = f"python {fix_script}"
+        print(f"\n🧠 brain-only 修复建议：")
+        print(f"   靶向: {weakest_cell} (通过率 {weakest_rate:.1%})")
+        print(f"   推荐: python {fix_script}")
+        print(f"   执行: {fix_cmd}")
+    elif weakest_cell in ("boundaryeval", "regression", "arena"):
+        # 先尝试用 brainonly_replay 焊
+        fix_script = "brainonly_replay.py"
+        fix_cmd = f"python {fix_script} --target {weakest_cell}"
+        print(f"\n🧠 brain-only 修复建议：")
+        print(f"   靶向: {weakest_cell} (通过率 {weakest_rate:.1%})")
+        print(f"   推荐: python {fix_script} --target {weakest_cell}")
+        print(f"   执行: {fix_cmd}")
+    else:
+        print(f"\n🧠 未知维度 {weakest_cell}，需手动排查")
+
+    # 按通过率排序所有维度（从最弱到最强）
+    ranked = sorted(cell_scores.items(), key=lambda x: x[1])
+    print(f"\n📊 维度强弱排名（从弱到强）：")
+    for i, (name, rate) in enumerate(ranked, 1):
+        bar = "█" * int(rate * 20) + "░" * (20 - int(rate * 20))
+        print(f"   {i}. {name:15s} [{bar}] {rate:.1%}")
+
+    print("\n" + "=" * 60)
+
+    # 核心判据：canary 75% 达标才算成功；但弱格信息永远诚实输出
+    return 0 if result.canary_pass_rate >= 0.75 else 1
 
 
 if __name__ == "__main__":
