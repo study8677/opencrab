@@ -39,7 +39,7 @@ def _read_project_briefs() -> list[str]:
     return briefs
 
 
-def form_intent(topic: str) -> dict:
+def form_intent(topic: str, force_continue: bool = False) -> dict:
     """
     决定针对给定 topic 是「续旧」还是「开新」。
     返回 dict：
@@ -53,6 +53,13 @@ def form_intent(topic: str) -> dict:
         return {"topic": topic, "strategy": "start_new",
                 "project": None, "briefs": []}
 
+    # 如果有未完成项目，且没有强制开新，则默认捞起最新的未完成项目
+    if force_continue or _has_unfinished_projects():
+        md = _get_latest_unfinished_project()
+        if md:
+            return {"topic": topic, "strategy": "continue",
+                    "project": str(md), "briefs": briefs}
+
     # 简单匹配：topic 关键字出现在哪个项目文件里
     topic_lower = topic.lower()
     for md in sorted(PROJECTS_DIR.glob("*.md")):
@@ -63,6 +70,29 @@ def form_intent(topic: str) -> dict:
 
     return {"topic": topic, "strategy": "start_new",
             "project": None, "briefs": briefs}
+
+
+def _has_unfinished_projects() -> bool:
+    """检查是否有未完成项目。"""
+    if not PROJECTS_DIR.exists():
+        return False
+    for md in PROJECTS_DIR.glob("*.md"):
+        content = md.read_text("utf-8")
+        if "done" not in content.lower() and "完成" not in content:
+            return True
+    return False
+
+
+def _get_latest_unfinished_project() -> Path | None:
+    """获取最新的未完成项目。"""
+    if not PROJECTS_DIR.exists():
+        return None
+    unfinished = []
+    for md in sorted(PROJECTS_DIR.glob("*.md")):
+        content = md.read_text("utf-8")
+        if "done" not in content.lower() and "完成" not in content:
+            unfinished.append(md)
+    return unfinished[-1] if unfinished else None
 
 
 def list_projects() -> list[str]:
