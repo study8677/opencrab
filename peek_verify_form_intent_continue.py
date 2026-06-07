@@ -1,20 +1,11 @@
-#!/usr/bin/env python3
-"""临时脚本：读取并执行 verify_form_intent_continue.py 的内容"""
-import os, sys
+import os
 
-# 读取源码
-src = os.path.join(os.path.dirname(__file__), 'verify_form_intent_continue.py')
-with open(src) as f:
-    content = f.read()
-
-print("=" * 60)
-print("verify_form_intent_continue.py 源码预览:")
-print("=" * 60)
-print(content[:3000])  # 先看前3k字符
-print("...")
-print("=" * 60)
-
-# 执行它
-print("\n>>> 执行 verify_form_intent_continue.py:")
-print("=" * 60)
-exec(compile(content, src, 'exec'), {'__name__': '__main__', '__file__': src})
+# 读取 verify_form_intent_continue.py
+verify_path = 'verify_form_intent_continue.py'
+if os.path.exists(verify_path):
+    with open(verify_path, 'r') as f:
+        content = f.read()
+    print("=== verify_form_intent_continue.py 完整内容 ===")
+    print(content)
+else:
+    print("verify_form_intent_continue.py 不存在")
