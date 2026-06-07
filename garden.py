@@ -289,6 +289,7 @@ def _audit_zero_call_modules(lookback_days: int = 30) -> set[str]:
 
     heartbeat_tasks.py 每 tick 写一条 event，`module` 字段记录哪个模块被用到。
     如果某个模块名从未出现在最近 lookback_days 天的日志里，就当它「审计级零调用」。
+    支持子模块路径（如 canary.canary_75 → 只取首段 stem）做前缀匹配。
     """
     zero: set[str] = set()
     log_dir = REPO_ROOT / ".crab" / "heartbeat"
@@ -311,16 +312,23 @@ def _audit_zero_call_modules(lookback_days: int = 30) -> set[str]:
                     import json as _json
                     rec = _json.loads(line)
                     mod = rec.get("module") or rec.get("organ")
-                    if mod:
-                        seen.add(mod)
+                    if not mod:
+                        continue
+                    # 规范化：支持子模块路径（foo/bar.py → foo），只取首段
+                    mod = mod.split("/")[-1].split(".")[0]
+                    seen.add(mod)
                 except Exception:
                     continue
     except Exception:
         pass
-    # 所有一级 py 文件中，没出现在 seen 里的
-    for p in _repo_py_files():
-        if p.stem not in seen:
-            zero.add(p.stem)
+    # 若日志为空/全过期，善意假设：无法给出 audit 证据 → 不把模块打死
+    repo_files = {p.stem for p in _repo_py_files()}
+    if not seen:
+        return set()   # 日志空 → 无法证明死了，不归零
+    # 所有一级 py 文件中，没出现在 seen 里的 → audit 零调用
+    for stem in repo_files:
+        if stem not in seen:
+            zero.add(stem)
     return zero
 
 
@@ -354,7 +362,8 @@ def _find_dead_modules(files: list[pathlib.Path],
 
     # 已知活跃/核心模块不做死模块处理
     CORE_SHIELD = {"crab", "hands", "organ", "readpack", "read_state",
-                   "heartbeat", "retirement_drill", "garden"}
+                   "heartbeat", "retirement_drill", "garden",
+                   "canary", "canary_75", "canary_25pct_audit"}
 
     for p in files:
         stem = p.stem
@@ -570,6 +579,14 @@ def main(argv: list[str] | None = None) -> None:
     print(f"   领地规模：{len(files)} 个根目录 .py | import 图：{len(graph)} 个被引用 | "
           f"30天零audit：{len(zero_audit)} 个", flush=True)
 
+    # 额外诊断：audit 零调用的完整列表（方便确认证据）
+    if zero_audit and args.retire > 0:
+        print(f"\n  📋 Audit 零调用详情（{len(zero_audit)} 个）：", flush=True)
+        for stem in sorted(zero_audit)[:20]:   # 最多列 20 个防刷屏
+            print(f"      · {stem}", flush=True)
+        if len(zero_audit) > 20:
+            print(f"      … 还有 {len(zero_audit) - 20} 个", flush=True)
+
     if not chores:
         print("\n  ✅ 领地干净——没扫到待养护的杂草，继续向前长。", flush=True)
 
@@ -596,7 +613,8 @@ def main(argv: list[str] | None = None) -> None:
             print(f"      {badge} [{dm.stem}]: {dm.reason}", flush=True)
             print(f"         证据: imported={dm.is_imported}, audit_30d={dm.in_audit}, main={dm.has_main}", flush=True)
         if args.retire > 0:
-            print(f"\n  → 执行 retirement_drill（{len(deads)} 个）", flush=True)
+            mode = "dry-run 预览" if args.dry_run else "真执行"
+            print(f"\n  → 执行 retirement_drill（{len(deads)} 个）【{mode}】", flush=True)
             _retire_modules(max_count=args.retire, dry_run=args.dry_run)
 
     print("\n—— 园丁只摆出该养护的草和验收线，拔不拔由我自己拍板。", flush=True)
