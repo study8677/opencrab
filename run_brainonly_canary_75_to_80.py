@@ -27,19 +27,29 @@ class BrainOnlyCanary75to80Welder:
         """Step1: 获取基线 fitness"""
         print("\n=== STEP1: BASELINE ===")
         result = subprocess.run(
-            ["python", "-c", 
-             "from canary import Canary; c = Canary(); print(c.canary_75(), c.canary_80())"],
+            ["python", "peek_fitness_json.py"],
             capture_output=True, text=True
         )
-        print(f"Canary基线: {result.stdout.strip()}")
+        print(result.stdout.strip() if result.stdout else "无fitness数据")
         if result.returncode != 0:
-            print(f"ERROR: {result.stderr}")
-            return False
+            print(f"ERROR: {result.stderr[:200]}")
         return True
     
-    def step2_minimal_patch(self):
-        """Step2: 找最小补丁"""
-        print("\n=== STEP2: MINIMAL PATCH ===")
+    def step2_autopsy(self):
+        """Step2: autopsy 25% 死因"""
+        print("\n=== STEP2: AUTOPSY 25% ROOT CAUSE ===")
+        result = subprocess.run(
+            ["python", "autopsy_canary_75_25pct_rootcause.py"],
+            capture_output=True, text=True, timeout=120
+        )
+        print(result.stdout[-600:] if result.stdout else "无输出")
+        if result.returncode != 0:
+            print(f"AUTOPSY ERROR: {result.stderr[:200]}")
+        return result.returncode == 0
+
+    def step3_minimal_patch(self):
+        """Step3: 脑补最小补丁"""
+        print("\n=== STEP3: MINIMAL PATCH ===")
         result = subprocess.run(
             ["python", "create_canary_75_minimal_patch.py"],
             capture_output=True, text=True
@@ -102,10 +112,11 @@ class BrainOnlyCanary75to80Welder:
         
         steps = [
             ("Baseline", self.step1_baseline),
-            ("Minimal Patch", self.step2_minimal_patch),
-            ("Three Gates", self.step3_three_gates),
-            ("3x Replication", self.step4_3x_replication),
-            ("Weld Fitness", self.step5_weld_fitness),
+            ("Autopsy 25%", self.step2_autopsy),
+            ("Minimal Patch", self.step3_minimal_patch),
+            ("Three Gates", self.step4_three_gates),
+            ("3x Replication", self.step5_3x_replication),
+            ("Weld Fitness", self.step6_weld_fitness),
         ]
         
         for name, step_fn in steps:
