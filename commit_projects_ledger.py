@@ -1,55 +1,51 @@
 #!/usr/bin/env python3
-"""解封 state/ 并提交 projects 账本"""
+"""把 projects ledger 提交 git（如果还没跟踪的话）"""
 import subprocess
-import sys
-from pathlib import Path
+import pathlib
 
-GITIGNORE = Path(".gitignore")
-TARGET = "state/projects/项目账.md"
-COMMIT_MSG = """feat: 解封 state/projects/ 接入 git 追踪
-
-跨心跳路线图终于接通——项目账正式被 git 接管，不再被潮汐抹平。
-
-验证: git diff --cached --stat"""
-
-def run(cmd, check=True):
+def run(cmd):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if check and result.returncode != 0:
-        print(f"FAIL: {cmd}")
-        print(result.stderr)
-        sys.exit(1)
     return result
 
-def edit_gitignore_line11():
-    """把 .gitignore 第 11 行的 state/ 封印注释掉"""
-    lines = GITIGNORE.read_text().splitlines(keepends=True)
-    if len(lines) < 11:
-        print("ERROR: .gitignore 只有 {} 行".format(len(lines)))
-        sys.exit(1)
-    # 第 11 行索引为 10
-    line11 = lines[10]
-    if not line11.strip().startswith("#"):
-        lines[10] = "# " + line11
-        GITIGNORE.write_text("".join(lines))
-        print("已封印第 11 行: {}".format(line11.rstrip()))
-    else:
-        print("第 11 行已是注释: {}".format(line11.rstrip()))
-
 def main():
-    print("=== 1. 解封 .gitignore 第 11 行 ===")
-    edit_gitignore_line11()
-
-    print("\n=== 2. git add {} ===".format(TARGET))
-    run("git add " + TARGET)
-    print("add 成功")
-
-    print("\n=== 3. git commit ===")
-    run("git commit -m '{}'".format(COMMIT_MSG))
-    print("commit 成功")
-
-    print("\n=== 4. 验证 git diff --cached --stat ===")
-    result = run("git diff --cached --stat", check=False)
-    print(result.stdout)
+    print("=== 核真并修复 projects ledger git 跟踪 ===\n")
+    
+    projects_dir = pathlib.Path("projects")
+    if not projects_dir.exists():
+        print("❌ projects/ 不存在，无需操作")
+        return
+    
+    # 检查 .gitignore 是否忽略了 projects
+    gi = pathlib.Path(".gitignore")
+    if gi.exists():
+        gi_content = gi.read_text()
+        if "projects" in gi_content:
+            print("⚠️  .gitignore 包含 'projects' 条目")
+            lines = gi_content.splitlines()
+            for i, l in enumerate(lines, 1):
+                if "projects" in l:
+                    print(f"  行 {i}: {l}")
+    
+    # git status projects/
+    r = run("git status --porcelain projects/ 2>/dev/null")
+    status = r.stdout.strip()
+    
+    if not status:
+        print("✅ projects/ 已经全部 git 跟踪")
+        
+        # 统计行数
+        r2 = run("git ls-files projects/ 2>/dev/null")
+        files = [f for f in r2.stdout.strip().split("\n") if f]
+        total = 0
+        for f in files:
+            p = pathlib.Path(f)
+            if p.exists():
+                total += len(p.read_text().splitlines())
+        print(f"   git 跟踪 {len(files)} 个文件，共 {total} 行")
+    else:
+        print("❌ projects/ 有未跟踪或修改的文件:")
+        print(status)
+        print("\n需要: git add projects/ && git commit")
 
 if __name__ == "__main__":
     main()

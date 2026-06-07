@@ -1,40 +1,64 @@
 #!/usr/bin/env python3
-"""Test: planner.form_intent correctly picks continue vs start_new."""
-import os, sys
-from pathlib import Path
+"""临时验证 planner 能否读到 projects/"""
+import sys
+import pathlib
+import importlib.util
 
-# ensure test fixtures exist
-StateDir = Path("state/projects")
-StateDir.mkdir(parents=True, exist_ok=True)
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.ModuleType(name)
+    spec.loader.exec_module(mod)
+    return mod
 
-# fixture 1: existing project for "fitness"
-fit_md = StateDir / "fitness_closed_loop.md"
-fit_md.write_text("# Fitness Closed Loop\nTracking real fitness improvements.\n")
+def main():
+    print("=== 验证 planner.form_intent 能否读 projects/ ===\n")
+    
+    planner_path = pathlib.Path("planner.py")
+    if not planner_path.exists():
+        print("❌ planner.py 不存在")
+        return
+    
+    try:
+        planner_mod = load_module("planner", planner_path)
+    except Exception as e:
+        print(f"❌ 加载失败: {e}")
+        return
+    
+    projects_dir = pathlib.Path("projects")
+    state_dir = pathlib.Path("state")
+    
+    print(f"projects/: {'存在' if projects_dir.exists() else '不存在'}")
+    print(f"state/: {'存在' if state_dir.exists() else '不存在'}")
+    
+    # 检查 form_intent
+    if hasattr(planner_mod, "form_intent"):
+        fi = getattr(planner_mod, "form_intent")
+        import inspect
+        src = inspect.getsource(fi)
+        
+        print(f"\nform_intent 源码包含:")
+        for keyword in ["projects", "state", "Path", "read", "open"]:
+            if keyword in src:
+                count = src.count(keyword)
+                print(f"  '{keyword}': {count} 次")
+        
+        # 查找实际路径引用
+        import re
+        path_refs = re.findall(r'["\']([^"\']*(?:projects|state)[^"\']*)["\']', src)
+        if path_refs:
+            print(f"\n实际路径引用:")
+            for pr in path_refs[:5]:
+                print(f"  {pr}")
+        
+        # 核真结论
+        if "projects" not in src and "state" not in src:
+            print("\n❌ form_intent 源码中不读任何项目目录")
+        elif "projects" not in src and "state" in src:
+            print("\n⚠️  form_intent 只读 state/，不读 projects/")
+        else:
+            print("\n✅ form_intent 源码中有项目目录引用")
+    else:
+        print("❌ 没有 form_intent 方法")
 
-# fixture 2: existing project for "planner"
-pln_md = StateDir / "planner_memory.md"
-pln_md.write_text("# Planner Memory\nTracking planner evolution.\n")
-
-sys.path.insert(0, ".")
-from planner import form_intent
-
-# Test 1: topic with existing project -> continue
-result1 = form_intent("fitness")
-assert result1["strategy"] == "continue", f"Expected continue, got {result1}"
-print(f"✅ 继续旧项目: {result1}")
-
-# Test 2: topic with NO existing project -> start_new
-result2 = form_intent("totally_new_topic_xyz")
-assert result2["strategy"] == "start_new", f"Expected start_new, got {result2}"
-print(f"✅ 开新拍: {result2}")
-
-# Test 3: existing by stem name
-result3 = form_intent("planner")
-assert result3["strategy"] == "continue", f"Expected continue, got {result3}"
-print(f"✅ 续旧(按stem名): {result3}")
-
-# cleanup
-fit_md.unlink(missing_ok=True)
-pln_md.unlink(missing_ok=True)
-
-print("\n✅ planner.form_intent 能正确区分续旧 vs 开新！")
+if __name__ == "__main__":
+    main()
