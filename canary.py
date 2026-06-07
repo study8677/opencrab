@@ -77,6 +77,9 @@ class Canary:
         except (ImportError, AttributeError):
             # 正常：模块不存在或名字不对
             return True
+        except (ImportError, AttributeError):
+            # 正常：模块不存在或名字不对
+            return True
         except Exception:
             # 异常：可能是循环依赖卡住
             return False

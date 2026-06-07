@@ -1,64 +1,48 @@
-#!/usr/bin/env python3
-"""
-reproduce_canary_3x.py - 3x 复现验证 canary 分数
-跑 3 次评估，取平均，确认是否稳定涨分
-"""
-import json
-import subprocess
-import sys
+"""3x 复现验证 canary 补丁"""
+import sys, json, subprocess
 from pathlib import Path
 
-def run_one_eval():
-    """单次评估"""
-    try:
-        # 读 fitness.json 当前分数
-        fj = Path("fitness.json")
-        if fj.exists():
-            data = json.loads(fj.read_text())
-            baseline = data.get("canary", 75)
-        else:
-            baseline = 75
-        
-        # 简单评估：检查 crab.py 是否存在且语法正确
-        crab = Path("crab.py")
-        if crab.exists():
-            try:
-                compile(crab.read_text(), 'crab.py', 'exec')
-                return baseline
-            except:
-                return baseline - 5
-        return baseline - 10
-    except:
-        return 70
+REPO_ROOT = Path(__file__).parent
 
-def reproduce_3x():
-    """3x 复现"""
+def run_canary_and_score():
+    """运行 canary 并从 fitness.json 读分数"""
+    result = subprocess.run([sys.executable, "-c", """
+import sys
+sys.path.insert(0, ".")
+from canary import Canary
+c = Canary()
+r = c.run()
+print(r)
+"""], capture_output=True, text=True, cwd=REPO_ROOT)
+    print(f"canary run: {result.stdout}")
+    
+    fp = REPO_ROOT / "fitness.json"
+    if not fp.exists():
+        return None
+    with open(fp) as f:
+        data = json.load(f)
+    return data.get("pass_rate") or data.get("score")
+
+def verify_3x():
     scores = []
     for i in range(3):
-        s = run_one_eval()
+        s = run_canary_and_score()
         scores.append(s)
-        print(f"  Run {i+1}: {s}%")
+        print(f"  Run {i+1}: score={s}")
     
-    avg = sum(scores) / len(scores)
-    return scores, avg
-
-def main():
-    print("=" * 50)
-    print("3x REPRODUCTION CHECK")
-    print("=" * 50)
+    baseline = scores[0]
+    if baseline is None:
+        print("ERROR: no baseline score")
+        return False
     
-    scores, avg = reproduce_3x()
-    
-    print(f"\nScores: {scores}")
-    print(f"Average: {avg:.1f}%")
-    
-    baseline = 75
-    if avg > baseline:
-        print(f"\n>>> IMPROVED: {avg:.1f}% > {baseline}% <<<")
-        return 0
+    all_ok = all(s is not None and s >= baseline + 1 for s in scores[1:])
+    if all_ok:
+        print(f"✓ 3x 验证通过: baseline={baseline}, new >= {baseline+1}")
+        return True
     else:
-        print(f"\n>>> NOT IMPROVED: {avg:.1f}% <= {baseline}% <<<")
-        return 1
+        print(f"✗ 3x 验证失败: scores={scores}")
+        return False
 
 if __name__ == "__main__":
-    sys.exit(main())
+    ok = verify_3x()
+    sys.exit(0 if ok else 1)
