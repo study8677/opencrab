@@ -378,6 +378,39 @@ def plan_with_continuity_gate(
         }
 
 
+def form_intent(task: str, ledger_path: Optional[str] = None, **kwargs) -> dict:
+    """
+    ⚡ 焊死的入口：form_intent 必须先读 state/projects/ 再决定规划方向。
+
+    这是项目路线图的根锚点——每次醒来不再当金鱼忘掉上次在做什么。
+    流程：
+    1. 读取 ROADMAP.md（当前山头）
+    2. 检查 state/projects/ 项目账
+    3. 问「续旧还是开新」（blocked=True 等待决策）
+    4. 闸门通过后才调用 crab.plan()
+
+    Args:
+        task: The intent/task to plan for.
+        ledger_path: Path to project ledger. Defaults to state/projects/项目账.md.
+        **kwargs: Additional args passed to gate_continuity and crab.plan.
+
+    Returns:
+        dict with:
+            - blocked: bool (True=需决策，False=闸门通过可规划)
+            - reason: str (why blocked, if any)
+            - review_prompt: str (interactive prompt for decisions)
+            - entries: list[dict] (incomplete projects)
+            - roadmap_summary: str
+            - 如果 blocked=False，还有 plan_result
+    """
+    return plan_with_continuity_gate(
+        task=task,
+        ledger_path=ledger_path,
+        require_roadmap=True,
+        **kwargs,
+    )
+
+
 if __name__ == "__main__":
     import sys
 
