@@ -358,8 +358,9 @@ def plan_with_continuity_gate(
     # ============ 闸门通过 → 执行规划 ============
     # Import here to avoid circular
     try:
-        from crab import plan
-        plan_result = plan(task, **kwargs)
+        from crab import plan          # noqa: F401 — 触发 crab.plan 注册
+        import crab as _crab_module
+        plan_result = _crab_module.plan(task, **kwargs)
         # Attach gate info to the result
         plan_result["_gate"] = {
             "passed": True,
@@ -378,9 +379,10 @@ def plan_with_continuity_gate(
         }
 
 
-def form_intent(task: str, ledger_path: Optional[str] = None, **kwargs) -> dict:
+def form_intent(task: str, ledger_path: Optional[str] = None,
+                require_roadmap: bool = True, **kwargs) -> dict:
     """
-    ⚡ 焊死的入口：form_intent 必须先读 state/projects/ 再决定规划方向。
+    ⚡ 焊死的入口：form_intent 必须先读 ROADMAP.md + 项目账 再决定规划方向。
 
     这是项目路线图的根锚点——每次醒来不再当金鱼忘掉上次在做什么。
     流程：

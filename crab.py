@@ -342,7 +342,11 @@ def record_evolution(intent: str, before: dict, after: dict,
     if verdict:
         log(f"🪞 {verdict}")
     if not honest:        # 名实不符 → 刻进情境记忆，下次决策前 _recall_lessons 必照见
-        _memorize_fault(intent_line, verdict)
+        try:
+            import memory
+            memory.memorize("fault", verdict)
+        except Exception:
+            pass        # 记忆挂了不反噬
     return summary
 
 
@@ -416,7 +420,7 @@ def _active_project() -> str:
             head = "\n".join(zhang.read_text("utf-8").splitlines()[:20]).strip()
             if head:
                 briefs.append("【项目账·跨心跳路线图】\n" + head)
-        proj_dir = STATE_DIR / "projects"
+        proj_dir = REPO_ROOT / "projects"
         if proj_dir.exists():
             for md in sorted(proj_dir.glob("*.md")):
                 lines = [ln.strip() for ln in md.read_text("utf-8").splitlines() if ln.strip()]
