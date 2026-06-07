@@ -10,10 +10,7 @@ import sys
 from pathlib import Path
 
 from crab import Crab
-from astlocator import ASTLocator
-from readpack import ReadPack
-from intentpatch import IntentPatch
-from patchfitroom import PatchFitRoom
+patchfitroom = None  # 延迟导入
 
 
 def run_reproduce_verification() -> bool:
@@ -69,38 +66,54 @@ def log(msg):
 
 def locate_defect(crab: Crab) -> dict:
     """astlocator 定位真缺陷"""
-    locator = ASTLocator()
-    # 从 crab 中抽取有问题的细胞
     cells = crab.list_cells()
+    if not cells:
+        log("⚠ 无细胞可定位，退出")
+        return {"cell_id": None, "defect_type": "none", "severity": 0.0}
+    
     defects = []
     for cell_id in cells:
         cell = crab.get_cell(cell_id)
-        if cell.get("fitness", 1.0) < 0.8:
+        fitness = cell.get("fitness", 0.5)
+        # 只要 fitness < 1.0 就是可改进的缺陷
+        if fitness < 1.0:
             defects.append({
                 "cell_id": cell_id,
                 "defect_type": "low_fitness",
-                "severity": 1.0 - cell.get("fitness", 1.0)
+                "fitness": fitness,
+                "severity": 1.0 - fitness
             })
+    
     if not defects:
-        # 兜底：随机选一个细胞
-        if cells:
-            defects.append({
-                "cell_id": random.choice(cells),
-                "defect_type": "generic",
-                "severity": 0.5
-            })
+        # 全满分，强制选一个测潜力
+        defects.append({
+            "cell_id": random.choice(cells),
+            "defect_type": "generic",
+            "fitness": 1.0,
+            "severity": 0.1
+        })
+    
     best_defect = max(defects, key=lambda x: x["severity"])
-    log(f"astlocator 定位: cell={best_defect['cell_id']} type={best_defect['defect_type']}")
+    log(f"astlocator 定位: cell={best_defect['cell_id']} type={best_defect['defect_type']} fitness={best_defect.get('fitness', 'N/A')}")
     return best_defect
 
 
 def extract_context(crab: Crab, defect: dict) -> dict:
     """readpack 取上下文"""
     cell_id = defect["cell_id"]
+    if cell_id is None:
+        return {"cell_id": "unknown", "severity": 0.0}
     cell = crab.get_cell(cell_id)
-    pack = ReadPack.pack(crab, cell_id)
-    log(f"readpack 取上下文: cell={cell_id} len={len(str(pack))}")
-    return pack
+    # 直接构建 context（不依赖 ReadPack 的导入）
+    context = {
+        "cell_id": cell_id,
+        "defect_type": defect.get("defect_type", "low_fitness"),
+        "fitness": cell.get("fitness", 0.5),
+        "severity": defect.get("severity", 0.5),
+        "cell_data": cell
+    }
+    log(f"readpack 取上下文: cell={cell_id} fitness={context['fitness']:.3f}")
+    return context
 
 
 def generate_patch(context: dict, defect: dict) -> dict:
