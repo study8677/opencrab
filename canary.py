@@ -74,10 +74,7 @@ class Canary:
             for mod in ["crab", "organogenesis", "hands", "brain"]:
                 importlib.import_module(mod)
             return True
-        except (ImportError, AttributeError):
-            # 正常：模块不存在或名字不对
-            return True
-        except (ImportError, AttributeError):
+        except (ImportError, AttributeError, ModuleNotFoundError):
             # 正常：模块不存在或名字不对
             return True
         except Exception:
