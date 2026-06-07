@@ -1,85 +1,149 @@
+#!/usr/bin/env python3
 """
-心跳驱动：每次迭代检查项目状态，决定继续/封存/开新。
+Heartbeat mechanism - tracks ongoing tasks, reports fitness, coordinates the system.
+This is the core lifeline of the crab organism.
 """
-
+import json
 import time
+from datetime import datetime
 from pathlib import Path
-from crab import memory, intent, ledger, cadence, health
+from typing import Any
 
-# 默认 state 根目录（可被测试覆写）
-STATE_ROOT = Path(__file__).parent.parent / "state"
+STATE_DIR = Path("state")
+TASKS_FILE = STATE_DIR / "heartbeat_tasks.json"
+FITNESS_FILE = STATE_DIR / "fitness.json"
+PROJECTS_FILE = STATE_DIR / "projects_ledger.json"
 
-PROJECTS_DIR = STATE_ROOT / "projects"
+def ensure_state():
+    """Ensure state directory and files exist."""
+    STATE_DIR.mkdir(exist_ok=True)
+    for f in [TASKS_FILE, FITNESS_FILE, PROJECTS_FILE]:
+        if not f.exists():
+            f.write_text("[]" if f != FITNESS_FILE else "{}")
 
+def load_tasks() -> list[dict]:
+    ensure_state()
+    with open(TASKS_FILE) as f:
+        return json.load(f)
 
-def read_project_status(project_id: str) -> str:
-    """
-    读取 state/projects/<id>.md，返回 status 字段。
-    缺失文件返回 "UNKNOWN"。
-    """
-    path = PROJECTS_DIR / f"{project_id}.md"
-    if not path.exists():
-        return "UNKNOWN"
-    for line in path.read_text().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("status:"):
-            return stripped.split(":", 1)[1].strip()
-    return "UNKNOWN"
+def save_tasks(tasks: list[dict]):
+    ensure_state()
+    with open(TASKS_FILE, 'w') as f:
+        json.dump(tasks, f, indent=2)
 
+def load_fitness() -> dict:
+    ensure_state()
+    if FITNESS_FILE.exists():
+        with open(FITNESS_FILE) as f:
+            return json.load(f)
+    return {}
 
-def get_active_project_id() -> str | None:
-    """
-    扫描 projects 目录，返回第一个 in_progress 项目的 id。
-    无 in_progress 项目返回 None。
-    """
-    if not PROJECTS_DIR.exists():
-        return None
-    for md_path in sorted(PROJECTS_DIR.glob("*.md")):
-        # id 就是文件名（不含 .md）
-        pid = md_path.stem
-        if read_project_status(pid) == "in_progress":
-            return pid
-    return None
+def save_fitness(data: dict):
+    ensure_state()
+    with open(FITNESS_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
+def pulse(task_name: str, status: str = "IN_PROGRESS", metadata: dict = None) -> bool:
+    """Record a heartbeat pulse for a task."""
+    tasks = load_tasks()
+    
+    # Find or create task
+    found = False
+    for t in tasks:
+        if t.get("name") == task_name:
+            t["status"] = status
+            t["last_pulse"] = datetime.now().isoformat()
+            if metadata:
+                t.update(metadata)
+            found = True
+            break
+    
+    if not found:
+        tasks.append({
+            "name": task_name,
+            "status": status,
+            "created": datetime.now().isoformat(),
+            "last_pulse": datetime.now().isoformat(),
+            **(metadata or {})
+        })
+    
+    save_tasks(tasks)
+    return True
 
-def heartbeat_form_intent_decision(project_id: str | None) -> str:
-    """
-    心跳时 form_intent 调度逻辑：
-    - 有 in_progress 项目 → 继续该项目
-    - 项目已 completed/archived → 封存，尝试开新
-    - 无 in_progress 项目 → 开新
-    - 项目状态 UNKNOWN → 开新
-    """
-    if project_id is None:
-        return "NEW"
+def get_task_status(task_name: str) -> str:
+    """Get the current status of a task."""
+    tasks = load_tasks()
+    for t in tasks:
+        if t.get("name") == task_name:
+            return t.get("status", "unknown")
+    return "not_found"
 
-    status = read_project_status(project_id)
-    if status == "in_progress":
-        return "CONTINUE"
-    elif status in ("completed", "archived", "paused"):
-        return "ARCHIVE_THEN_NEW"
-    else:  # UNKNOWN or other
-        return "NEW"
+def complete_task(task_name: str, fitness_score: float = 1.0):
+    """Mark a task as complete and record its fitness."""
+    # Update tasks
+    tasks = load_tasks()
+    for t in tasks:
+        if t.get("name") == task_name:
+            t["status"] = "DONE"
+            t["completed"] = datetime.now().isoformat()
+            break
+    save_tasks(tasks)
+    
+    # Update fitness
+    fitness = load_fitness()
+    fitness[task_name] = fitness_score
+    save_fitness(fitness)
 
+def get_all_statuses() -> dict:
+    """Get all task statuses."""
+    tasks = load_tasks()
+    return {t.get("name"): t.get("status") for t in tasks}
 
-def run_heartbeat_once() -> dict:
-    """
-    一次心跳：查项目状态 → form_intent 决策 → 记录 cadence。
-    """
-    project_id = get_active_project_id()
-    decision = heartbeat_form_intent_decision(project_id)
+def get_fitness(task_name: str = None) -> Any:
+    """Get fitness score(s)."""
+    fitness = load_fitness()
+    if task_name:
+        return fitness.get(task_name)
+    return fitness
 
-    result = {
-        "timestamp": time.time(),
-        "active_project": project_id,
-        "status": read_project_status(project_id) if project_id else None,
-        "decision": decision,
-    }
-
-    cadence.record_pulse(
-        project_id=project_id,
-        decision=decision,
-        status=result["status"],
-    )
-
-    return result
+# === CLI Interface ===
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) < 2:
+        print("Usage: heartbeat.py <command> [args]")
+        print("Commands: pulse, status, complete, fitness, list")
+        sys.exit(1)
+    
+    cmd = sys.argv[1]
+    
+    if cmd == "pulse":
+        name = sys.argv[2] if len(sys.argv) > 2 else "default"
+        pulse(name)
+        print(f"Pulsed: {name}")
+    
+    elif cmd == "status":
+        name = sys.argv[2] if len(sys.argv) > 2 else None
+        if name:
+            print(f"{name}: {get_task_status(name)}")
+        else:
+            for n, s in get_all_statuses().items():
+                print(f"  {n}: {s}")
+    
+    elif cmd == "complete":
+        name = sys.argv[2] if len(sys.argv) > 2 else "default"
+        score = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+        complete_task(name, score)
+        print(f"Completed: {name} = {score}")
+    
+    elif cmd == "fitness":
+        name = sys.argv[2] if len(sys.argv) > 2 else None
+        print(get_fitness(name))
+    
+    elif cmd == "list":
+        for n, s in get_all_statuses().items():
+            print(f"  [{s}] {n}")
+    
+    else:
+        print(f"Unknown command: {cmd}")
+        sys.exit(1)

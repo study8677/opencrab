@@ -1,26 +1,53 @@
-import os, sys
-# peek at heartbeat weld status
+#!/usr/bin/env python3
+"""Temp peek - what is test_incomplete_heartbeat_weld status right now?"""
+import json
+from pathlib import Path
 
-# Read run_incomplete_heartbeat_weld_to_done.py
-print("=== run_incomplete_heartbeat_weld_to_done.py ===")
-if os.path.exists("run_incomplete_heartbeat_weld_to_done.py"):
-    with open("run_incomplete_heartbeat_weld_to_done.py") as f:
-        print(f.read())
+print("=== TEMP PEEK: test_incomplete_heartbeat_weld ===\n")
 
-print("\n=== heartbeat_tasks.py (first 200 lines) ===")
-if os.path.exists("heartbeat_tasks.py"):
-    with open("heartbeat_tasks.py") as f:
-        lines = f.readlines()
-        for line in lines[:200]:
-            print(line, end='')
+# 1. Check heartbeat_tasks.json
+tasks_file = Path("state/heartbeat_tasks.json")
+if tasks_file.exists():
+    with open(tasks_file) as f:
+        tasks = json.load(f)
+    print("heartbeat_tasks.json:")
+    for t in tasks:
+        name = t.get("name", "") or t.get("task", "")
+        if "incomplete" in name.lower():
+            print(f"  {json.dumps(t, indent=2)}")
 else:
-    print("NOT FOUND")
+    print("heartbeat_tasks.json: NOT FOUND")
 
-print("\n=== heartbeat.py (first 150 lines) ===")
-if os.path.exists("heartbeat.py"):
-    with open("heartbeat.py") as f:
-        lines = f.readlines()
-        for line in lines[:150]:
-            print(line, end='')
+# 2. Check fitness.json
+fitness_file = Path("state/fitness.json")
+if fitness_file.exists():
+    with open(fitness_file) as f:
+        fitness = json.load(f)
+    print("\nfitness.json entries with 'incomplete' or 'heartbeat':")
+    for k, v in fitness.items():
+        if "incomplete" in k.lower() or "heartbeat" in k.lower():
+            print(f"  {k}: {v}")
+    if not any("incomplete" in k.lower() for k in fitness):
+        print("  (none found)")
 else:
-    print("NOT FOUND")
+    print("fitness.json: NOT FOUND")
+
+# 3. Check projects_ledger.json
+ledger = Path("state/projects_ledger.json")
+if ledger.exists():
+    with open(ledger) as f:
+        projects = json.load(f)
+    print("\nprojects_ledger.json entries with 'incomplete' or 'heartbeat':")
+    for p in projects:
+        name = p.get("name", "")
+        if "incomplete" in name.lower():
+            print(f"  {json.dumps(p, indent=2)}")
+else:
+    print("projects_ledger.json: NOT FOUND")
+
+# 4. Check if there's a test file
+test_file = Path("test_incomplete_heartbeat_weld.py")
+if test_file.exists():
+    print(f"\ntest_incomplete_heartbeat_weld.py exists: {test_file.stat().st_size} bytes")
+else:
+    print("\ntest_incomplete_heartbeat_weld.py: NOT FOUND")
