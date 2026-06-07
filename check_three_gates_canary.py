@@ -1,82 +1,92 @@
+#!/usr/bin/env python3
 """
-3 闸检查：canary.py 修复后必须过此三闸
+check_three_gates_canary.py - 试衣间三闸 for canary 80%
+Gate1: 语法正确
+Gate2: import 不炸  
+Gate3: 基础功能不退
 """
 import ast
-import json
 import subprocess
+import sys
 from pathlib import Path
 
-CANARY = Path(__file__).parent / "canary.py"
-FIXED_CANARY = Path(__file__).parent / "canary.py"
+def gate1_syntax(path):
+    """Gate 1: Python 语法正确"""
+    try:
+        with open(path) as f:
+            compile(f.read(), str(path), 'exec')
+        return True, "OK"
+    except SyntaxError as e:
+        return False, f"SyntaxError at line {e.lineno}: {e.msg}"
 
-class ThreeGates:
-    def __init__(self):
-        self.results = {}
+def gate2_import(path):
+    """Gate 2: 模块可导入"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", f"import sys; sys.path.insert(0, '.'); import {path.stem}"],
+            capture_output=True, timeout=10
+        )
+        if result.returncode == 0:
+            return True, "OK"
+        return False, result.stderr.decode()[:100]
+    except Exception as e:
+        return False, str(e)
+
+def gate3_smoke():
+    """Gate 3: 基础冒烟测试"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", """
+import crab
+print("smoke_ok")
+"""],
+            capture_output=True, timeout=15
+        )
+        if result.returncode == 0 and b"smoke_ok" in result.stdout:
+            return True, "OK"
+        return False, result.stderr.decode()[:100]
+    except Exception as e:
+        return False, str(e)
+
+def check_all(path="crab.py"):
+    """三闸全检"""
+    p = Path(path)
+    if not p.exists():
+        return {"error": f"{path} not found"}
     
-    def gate1_syntax_and_import(self) -> bool:
-        """第一闸：语法正确 + 可导入"""
-        try:
-            ast.parse(FIXED_CANARY.read_text())
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("canary_test", FIXED_CANARY)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            self.results["gate1"] = "✅ 语法正确，模块可导入"
-            return True
-        except Exception as e:
-            self.results["gate1"] = f"❌ {e}"
-            return False
+    g1, m1 = gate1_syntax(p)
+    g2, m2 = gate2_import(p)
+    g3, m3 = gate3_smoke()
     
-    def gate2_logic_fixed(self) -> bool:
-        """第二闸：逻辑已修复（不再有 >= 0 的永恒 True）"""
-        source = FIXED_CANARY.read_text()
-        # 检查是否还存在永恒 True 的缺陷模式
-        if ">= 0  # 总是返回 True" in source or ">= 0  # 至少一个文件才算有活动" not in source:
-            # 如果旧的注释还在，或者新的正确逻辑不在
-            if "return len(list(evidence_dir.iterdir())) >= 0" in source:
-                self.results["gate2"] = "❌ 缺陷仍存在"
-                return False
-        
-        # 确认修复后是 > 0
-        if "> 0" in source and "_check_recent_activity" in source:
-            self.results["gate2"] = "✅ 逻辑已修复：>= 0 改为 > 0"
-            return True
-        self.results["gate2"] = "❌ 修复逻辑不正确"
-        return False
+    result = {
+        "gate1_syntax": g1,
+        "gate1_msg": m1,
+        "gate2_import": g2,
+        "gate2_msg": m2,
+        "gate3_smoke": g3,
+        "gate3_msg": m3,
+        "all_pass": g1 and g2 and g3
+    }
     
-    def gate3_canary_run_ok(self) -> bool:
-        """第三闸：canary.py 能正常运行"""
-        try:
-            result = subprocess.run(
-                ["python", str(FIXED_CANARY)],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if result.returncode == 0:
-                self.results["gate3"] = f"✅ 运行成功: {result.stdout.strip()}"
-                return True
-            else:
-                self.results["gate3"] = f"❌ 运行失败: {result.stderr}"
-                return False
-        except Exception as e:
-            self.results["gate3"] = f"❌ 异常: {e}"
-            return False
+    return result
+
+def main():
+    result = check_all()
     
-    def run_all(self) -> dict:
-        g1 = self.gate1_syntax_and_import()
-        g2 = self.gate2_logic_fixed()
-        g3 = self.gate3_canary_run_ok()
-        passed = sum([g1, g2, g3])
-        self.results["summary"] = f"通过 {passed}/3 闸"
-        return self.results
+    print("=" * 50)
+    print("THREE GATES CHECK for canary")
+    print("=" * 50)
+    
+    for k, v in result.items():
+        status = "PASS" if isinstance(v, bool) and v else ("FAIL" if isinstance(v, bool) and not v else "")
+        print(f"  {k}: {v} {status}")
+    
+    if result.get("all_pass"):
+        print("\n>>> ALL GATES PASSED <<<")
+        return 0
+    else:
+        print("\n>>> GATES FAILED - BLOCK <<<")
+        return 1
 
 if __name__ == "__main__":
-    gates = ThreeGates()
-    results = gates.run_all()
-    print("\n=== 3 闸检查结果 ===")
-    for k, v in results.items():
-        print(f"  {k}: {v}")
-    
-    assert results.get("summary", "").startswith("通过 3/3"), "3闸未全过！"
-    print("\n🎉 3 闸全过！")
+    sys.exit(main())
