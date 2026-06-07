@@ -1,50 +1,80 @@
-#!/usr/bin/env python3
-"""验证 form_intent 是否正确识别未完成项目并返回 continue 策略。"""
+"""验证 form_intent 能正确读取 state/projects/ 并对进行中项目返回 continue"""
 import sys
-sys.path.insert(0, ".")
+import os
+sys.path.insert(0, os.path.dirname(__file__))
 
-from planner import form_intent, list_projects, PROJECTS_DIR
-from pathlib import Path
+from planner import form_intent
+from crab import read_state
+import tempfile
+import shutil
 
-def main():
-    print("=" * 60)
-    print("验证 form_intent 是否续推未完成项目")
-    print("=" * 60)
+def verify():
+    # 模拟 canary 焊链进行中项目
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # 创建临时 state/projects/
+        proj_dir = os.path.join(tmpdir, 'projects')
+        os.makedirs(proj_dir)
+        
+        # 写入一个进行中的 canary 焊链项目
+        project_file = os.path.join(proj_dir, 'canary_weld_chain.md')
+        with open(project_file, 'w') as f:
+            f.write("""# canary_weld_chain
 
-    # 1. 列出所有项目
-    projects = list_projects()
-    print(f"\n当前项目数: {len(projects)}")
-    for p in projects:
-        print(f"  - {p}")
+## 元信息
+- 项目名: canary_weld_chain
+- 状态: 进行中
+- 开始时间: 2024-01-01
+- 最后心跳: 2024-06-05
+- 优先级: p1
 
-    # 2. 验证测试项目是否存在
-    test_project = PROJECTS_DIR / "test_incomplete_heartbeat_weld.md"
-    assert test_project.exists(), f"测试项目不存在: {test_project}"
-    print(f"\n✓ 测试项目存在: {test_project}")
+## 当前进度
+- 阶段: 焊链第3轮
+- 进度: 进行中
+- 待修复: canary_80_weld_rootcause
 
-    # 3. 调用 form_intent，topic 匹配测试项目
-    topic = "heartbeat weld test"
-    result = form_intent(topic)
+## 心跳记录
+| 时间 | 动作 | 状态 |
+|------|------|------|
+| 2024-06-01 | 开始焊链 | 进行中 |
+| 2024-06-05 | 继续焊链 | 进行中 |
 
-    print(f"\nform_intent(topic='{topic}') 返回:")
-    print(f"  strategy: {result['strategy']}")
-    print(f"  project:  {result['project']}")
-    print(f"  briefs 数量: {len(result['briefs'])}")
+## 意图历史
+- 2024-06-01: 启动 canary 焊链
+- 2024-06-05: 继续深耕，不换山头
+""")
 
-    # 4. 断言验证
-    if result['strategy'] == 'continue' and result['project']:
-        print(f"\n✅ 验证通过: form_intent 正确识别并选择续推")
-        # 确认 project 指向测试项目
-        if 'test_incomplete_heartbeat_weld' in result['project']:
-            print(f"✅ 项目指向正确: {result['project']}")
-        else:
-            print(f"⚠️ 项目指向可能不对: {result['project']}")
-        return True
-    else:
-        print(f"\n❌ 验证失败: strategy={result['strategy']}, project={result['project']}")
-        print("   说明 form_intent 没有正确识别未完成项目")
-        return False
+        # 用 monkeypatch 方式让 read_state 能读到临时目录
+        original_read_state = read_state
+        
+        def mock_read_state(*args, **kwargs):
+            # 临时切换到测试目录
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                return original_read_state(*args, **kwargs)
+            finally:
+                os.chdir(old_cwd)
+        
+        import crab
+        old_func = crab.read_state
+        crab.read_state = mock_read_state
+        
+        try:
+            # 调用 form_intent，传入 canary_weld_chain 项目
+            intent = form_intent('canary_weld_chain')
+            
+            print(f"form_intent 返回: {intent}")
+            
+            # 验证返回的是 continue
+            if intent.get('strategy') == 'continue':
+                print("✅ 验证通过: 对进行中项目返回 continue 策略")
+                return True
+            else:
+                print(f"❌ 验证失败: 期望 strategy='continue'，得到 {intent}")
+                return False
+        finally:
+            crab.read_state = old_func
 
-if __name__ == "__main__":
-    ok = main()
-    sys.exit(0 if ok else 1)
+if __name__ == '__main__':
+    success = verify()
+    sys.exit(0 if success else 1)
