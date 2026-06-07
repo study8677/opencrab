@@ -206,10 +206,10 @@ def _realdefect_scan(filepath: str, quiet: bool = False) -> bool:
 
     策略：
       1. 用 ast 解析目标文件
-      2. 尝单步 exec 每个顶层 def/方法，捉 ImportError/SyntaxError/AttributeError
-      3. 捉 unbound method（self/cls 参数但以 function 方式传参）
-      4. 捉死返回（函数无 return 但有条件分支）
-      5. 捉空实现（只有 pass/...）
+      2. 捉 unbound method（self/cls 参数但以 function 方式传参）
+      3. 捉死返回（函数无 return 但有条件分支）
+      4. 捉空实现（只有 pass/...）
+      5. 捉 self/pass（方法参数有 self 但方法体只有 pass）
     """
     findings: list[dict] = []
     try:
@@ -235,6 +235,21 @@ def _realdefect_scan(filepath: str, quiet: bool = False) -> bool:
             print(f"✅ {filepath} 未发现明显缺陷")
 
     return len(findings) == 0
+
+
+def get_realdefect_findings(filepath: str) -> list[dict]:
+    """获取目标文件的真实缺陷列表（供 navlog 分析使用）。"""
+    findings: list[dict] = []
+    try:
+        src = Path(filepath).read_text()
+    except Exception:
+        return [{"file": filepath, "defect": "read_error"}]
+
+    findings.extend(_scan_unbound_method(src, filepath))
+    findings.extend(_scan_dead_return(src, filepath))
+    findings.extend(_scan_empty_impl(src, filepath))
+    findings.extend(_scan_self_pass(src, filepath))
+    return findings
 
 
 def _scan_unbound_method(src: str, filepath: str) -> list[dict]:
@@ -531,12 +546,16 @@ def main(argv: list[str] | None = None) -> None:
                     help="自检：三类修补都定位准、只改那一段、契约放行（供 evidence 复跑）")
     ap.add_argument("--json", action="store_true", help="机读：支持的定位种类 + 目标语法")
     ap.add_argument("--quiet", action="store_true", help="静默，仅以退出码表态")
+    ap.add_argument("--target-file", dest="target_file",
+                    help="目标文件路径（配合 --mode realdefect 使用）")
+    ap.add_argument("--mode",
+                    help="执行模式：realdefect=扫描目标文件暴露真实缺陷")
     args = ap.parse_args(argv)
 
     if args.selfcheck:
         sys.exit(0 if _selfcheck(quiet=args.quiet) else 1)
 
-    if args.mode == "realdefect":
+    if getattr(args, "mode", None) == "realdefect":
         if not args.target_file:
             print("❌ --mode realdefect 需要指定目标文件", file=sys.stderr)
             sys.exit(1)
