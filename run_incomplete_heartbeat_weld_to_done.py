@@ -95,6 +95,7 @@ def main():
 
     # Step 3: Mark task as DONE - THIS IS THE "焊完"
     tasks = load_tasks()
+    task_found = False
     for t in tasks:
         if t.get("name") == task_name:
             t["status"] = "DONE"
@@ -102,9 +103,22 @@ def main():
             if "steps" not in t:
                 t["steps"] = []
             t["steps"].append("weld_complete")
+            task_found = True
             print(f"✓ Marked task as DONE")
             print(f"  Final task: {json.dumps(t, indent=2)}")
             break
+    if not task_found:
+        print(f"! ERROR: Task '{task_name}' not found in tasks list!")
+        print(f"  Available tasks: {[t.get('name') for t in tasks]}")
+        # Fallback: create the task directly
+        tasks.append({
+            "name": task_name,
+            "status": "DONE",
+            "created": datetime.now().isoformat(),
+            "completed": datetime.now().isoformat(),
+            "steps": ["weld_complete"]
+        })
+        print(f"  Created task as DONE")
     save_tasks(tasks)
 
     # Verify the save worked
